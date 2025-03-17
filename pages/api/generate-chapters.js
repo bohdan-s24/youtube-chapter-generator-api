@@ -89,14 +89,15 @@ export default async function handler(req, res) {
     const transcriptWithTimestamps = Array.isArray(transcriptResponse) 
       ? transcriptResponse.map(entry => {
           // Ensure we have valid timestamps
-          const time = entry.offset || entry.start || 0;
-          const duration = entry.duration || 0;
+          const time = typeof entry.offset === 'number' ? entry.offset : 
+                      typeof entry.start === 'number' ? entry.start : 0;
+          const duration = typeof entry.duration === 'number' ? entry.duration : 0;
           
           return {
-            time: time,
-            duration: duration,
+            time: Math.floor(time / 1000), // Convert milliseconds to seconds
+            duration: Math.floor(duration / 1000),
             text: entry.text || '',
-            formattedTime: formatTime(time)
+            formattedTime: formatTime(Math.floor(time / 1000))
           };
         }).filter(entry => entry.text.trim() !== '') // Remove empty entries
       : typeof transcriptResponse === 'string' 
@@ -124,18 +125,37 @@ export default async function handler(req, res) {
     const configuration = new Configuration({ apiKey });
     const openai = new OpenAIApi(configuration);
 
+    // Create a condensed version of the transcript for the prompt
+    const totalDuration = transcriptWithTimestamps[transcriptWithTimestamps.length - 1].time;
+    const segmentCount = transcriptWithTimestamps.length;
+    
+    // Sample transcript segments at regular intervals
+    const sampleSize = 20;
+    const sampledSegments = [];
+    const interval = Math.floor(segmentCount / sampleSize);
+    
+    for (let i = 0; i < segmentCount; i += interval) {
+      if (sampledSegments.length < sampleSize) {
+        sampledSegments.push(transcriptWithTimestamps[i]);
+      }
+    }
+
     // Prepare a more structured prompt for OpenAI
     const prompt = `
     Create YouTube chapters based on this video transcript.
+    Video duration: ${formatTime(totalDuration)}
+    Total segments: ${segmentCount}
+
     Rules:
     1. Create 5-8 evenly spaced chapters
     2. First chapter must be "00:00 Introduction"
     3. Each chapter must start with a timestamp in MM:SS format
     4. Titles should be concise and descriptive (3-7 words)
     5. Use actual timestamps from the transcript segments
+    6. Last chapter should not exceed ${formatTime(totalDuration)}
 
-    Transcript segments (showing first 100):
-    ${transcriptWithTimestamps.slice(0, 100).map(seg => 
+    Sample transcript segments:
+    ${sampledSegments.map(seg => 
       `[${seg.formattedTime}] ${seg.text}`
     ).join('\n')}
 
@@ -149,7 +169,7 @@ export default async function handler(req, res) {
         messages: [
           { 
             role: "system", 
-            content: "You are a YouTube chapter generator. Create precise, well-timed chapters that follow the exact format: MM:SS Title" 
+            content: "You are a YouTube chapter generator. Create precise, well-timed chapters that follow the exact format: MM:SS Title. Ensure chapters are evenly distributed throughout the video duration." 
           },
           { role: "user", content: prompt }
         ],
