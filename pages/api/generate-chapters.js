@@ -27,20 +27,9 @@ function formatTime(seconds) {
   }
 }
 
-// Import youtube-transcript with better error handling
-let YouTubeTranscript;
-try {
-  const { YouTubeTranscript: YTTranscript } = require('youtube-transcript');
-  YouTubeTranscript = YTTranscript;
-} catch (error) {
-  console.error('Error importing youtube-transcript:', error);
-  // Create a placeholder with better error messaging
-  YouTubeTranscript = {
-    fetchTranscript: async () => {
-      throw new Error('YouTube Transcript module not available. Using provided transcript instead.');
-    }
-  };
-}
+// Import required modules
+import { OpenAI } from 'openai';
+import { YouTubeTranscript } from 'youtube-transcript';
 
 export default async function handler(req, res) {
   // Set CORS headers
@@ -61,16 +50,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Dynamic imports
-    const { OpenAI } = await import('openai');
-    const semver = await import('semver');
-    
-    // Runtime version checks
-    const REQUIRED_NODE_VERSION = '18.0.0';
-    if (!semver.default.gte(process.version, REQUIRED_NODE_VERSION)) {
-      console.warn(`Node.js version ${REQUIRED_NODE_VERSION} or higher is recommended. Current version: ${process.version}`);
-    }
-
     console.log('Request body:', {
       hasVideoId: !!req.body.videoId,
       hasTranscript: !!req.body.transcript,
@@ -96,15 +75,11 @@ export default async function handler(req, res) {
     else if (videoId) {
       console.log(`Fetching transcript for video ID: ${videoId}`);
       try {
-        // Check if YouTubeTranscript is properly initialized
-        if (!YouTubeTranscript || typeof YouTubeTranscript.fetchTranscript !== 'function') {
-          throw new Error('YouTube Transcript API is not available, please provide transcript directly');
-        }
-        
         transcriptResponse = await YouTubeTranscript.fetchTranscript(videoId);
         if (!transcriptResponse || transcriptResponse.length === 0) {
           throw new Error('No transcript found for this video');
         }
+        console.log(`Successfully fetched transcript with ${transcriptResponse.length} segments`);
       } catch (transcriptError) {
         console.error('Error fetching transcript:', transcriptError);
         return res.status(500).json({ 
