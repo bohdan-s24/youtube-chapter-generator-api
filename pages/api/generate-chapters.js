@@ -1,4 +1,5 @@
-import { OpenAI } from 'openai';
+// Remove static import
+// import { OpenAI } from 'openai';
 
 // Add version check
 const REQUIRED_NODE_VERSION = '18.0.0';
@@ -60,6 +61,21 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Dynamic import OpenAI
+    const { OpenAI } = await import('openai');
+    
+    // Version checks
+    try {
+      const semver = await import('semver');
+      const REQUIRED_NODE_VERSION = '18.0.0';
+      if (!semver.gte(process.version, REQUIRED_NODE_VERSION)) {
+        throw new Error(`Node.js version ${REQUIRED_NODE_VERSION} or higher is required. Current version: ${process.version}`);
+      }
+    } catch (versionError) {
+      console.error('Version check error:', versionError);
+      // Continue execution even if version check fails
+    }
+
     console.log('Request body:', {
       hasVideoId: !!req.body.videoId,
       hasTranscript: !!req.body.transcript,
@@ -141,7 +157,7 @@ export default async function handler(req, res) {
 
     // Initialize OpenAI with better error handling
     try {
-      const apiKey = openai_api_key || process.env.OPENAI_API_KEY;
+      const apiKey = req.body.openai_api_key || process.env.OPENAI_API_KEY;
       if (!apiKey) {
         console.error('OpenAI API key not provided');
         return res.status(400).json({ 
@@ -153,21 +169,32 @@ export default async function handler(req, res) {
       console.log('Initializing OpenAI client...');
       console.log('Environment:', {
         nodeVersion: process.version,
-        openaiVersion: OPENAI_VERSION,
         environment: process.env.NODE_ENV
       });
 
-      const openai = new OpenAI({
-        apiKey: apiKey,
-        dangerouslyAllowBrowser: true
-      });
+      let openai;
+      try {
+        openai = new OpenAI({
+          apiKey: apiKey,
+          dangerouslyAllowBrowser: true
+        });
 
-      // Verify OpenAI client
-      if (!openai || !openai.chat || !openai.chat.completions) {
-        throw new Error('OpenAI client not properly initialized');
+        // Test the client with a simple completion
+        const testCompletion = await openai.chat.completions.create({
+          model: "gpt-3.5-turbo",
+          messages: [{ role: "system", content: "Test" }],
+          max_tokens: 1
+        });
+
+        if (!testCompletion) {
+          throw new Error('OpenAI test completion failed');
+        }
+
+        console.log('OpenAI client initialized and tested successfully');
+      } catch (initError) {
+        console.error('OpenAI initialization error:', initError);
+        throw new Error(`Failed to initialize OpenAI client: ${initError.message}`);
       }
-
-      console.log('OpenAI client initialized successfully');
 
       // Create a condensed version of the transcript for the prompt
       const totalDuration = transcriptWithTimestamps[transcriptWithTimestamps.length - 1].time;
