@@ -445,9 +445,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Function to generate chapters
   async function generateChapters(tab, videoId) {
-    showLoading('Extracting video transcript...');
-    
     try {
+      // Disable the generate button and show loading state
+      const generateButton = document.getElementById('generate-btn');
+      generateButton.disabled = true;
+      
+      // Clear previous results
+      const chaptersContainer = document.getElementById('chapters-container');
+      chaptersContainer.innerHTML = '';
+      
+      // Show loading message
+      chaptersContainer.innerHTML = '<p>Extracting video transcript...</p>';
+      
       // Get the transcript from the content script
       const transcriptResponse = await getVideoTranscript(tab.id);
       console.log('Transcript response:', transcriptResponse);
@@ -459,8 +468,10 @@ document.addEventListener('DOMContentLoaded', function() {
       const transcript = transcriptResponse.transcript;
       showDebugInfo(transcript);
       
-      // First try the server API
-      showLoading('Generating chapters with AI...');
+      // Get OpenAI API key if available
+      const apiKey = await getStoredApiKey();
+      
+      // Try server API first
       try {
         const response = await fetch('https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters', {
           method: 'POST',
@@ -469,80 +480,53 @@ document.addEventListener('DOMContentLoaded', function() {
           },
           body: JSON.stringify({
             videoId: videoId,
-            transcript: transcript
+            transcript: transcript,
+            openai_api_key: apiKey
           })
         });
         
         const data = await response.json();
         
-        // Check if we should use local generation
-        if (!response.ok && data.shouldUseLocalGeneration) {
-          console.log('Server API failed, falling back to local generation');
-          showDebugInfo(transcript, data.error || 'API error');
-          return await generateChaptersLocally(transcript);
+        if (data.error) {
+          console.error('Server API error:', data);
+          throw new Error(data.error);
         }
         
-        // If response is not ok and we shouldn't use local generation, throw error
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to generate chapters');
-        }
+        displayChapters(data);
         
-        // If we got chapters, display them
-        if (data.chapters && data.chapters.length > 0) {
-          displayChapters(data);
-          return;
-        }
-        
-        // If we got here, something went wrong
-        throw new Error('No chapters generated');
-        
-      } catch (apiError) {
-        console.error('API Error:', apiError);
-        
-        // Try using OpenAI directly if we have an API key
-        try {
-          const result = await chrome.storage.sync.get(['openai_api_key']);
-          if (result.openai_api_key) {
-            console.log('Trying direct OpenAI generation...');
-            showLoading('Trying direct OpenAI generation...');
-            
-            const openaiResponse = await fetch('https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                videoId: videoId,
-                transcript: transcript,
-                openai_api_key: result.openai_api_key
-              })
-            });
-            
-            const openaiData = await openaiResponse.json();
-            
-            if (openaiResponse.ok && openaiData.chapters) {
-              displayChapters(openaiData);
-              return;
-            }
-            
-            // If OpenAI direct fails, fall back to local
-            console.log('OpenAI direct failed, falling back to local');
-            showDebugInfo(transcript, 'OpenAI direct generation failed');
-            return await generateChaptersLocally(transcript);
-          }
-        } catch (openaiError) {
-          console.error('OpenAI Direct Error:', openaiError);
-        }
-        
-        // If all else fails, use local generation
-        console.log('All API attempts failed, using local generation');
-        showDebugInfo(transcript, apiError.message);
-        return await generateChaptersLocally(transcript);
+      } catch (error) {
+        console.error('Failed to generate chapters:', error);
+        chaptersContainer.innerHTML = `
+          <div class="error-message">
+            <p>Error: ${error.message}</p>
+            <p>Please ensure:</p>
+            <ul>
+              <li>The video has captions enabled</li>
+              <li>You are on a valid YouTube video page</li>
+              <li>Your internet connection is stable</li>
+            </ul>
+          </div>
+        `;
       }
+      
     } catch (error) {
       console.error('Error:', error);
-      showError(error.message);
-      hideLoading();
+      const chaptersContainer = document.getElementById('chapters-container');
+      chaptersContainer.innerHTML = `
+        <div class="error-message">
+          <p>Error: ${error.message}</p>
+          <p>Please ensure:</p>
+          <ul>
+            <li>The video has captions enabled</li>
+            <li>You are on a valid YouTube video page</li>
+            <li>Your internet connection is stable</li>
+          </ul>
+        </div>
+      `;
+    } finally {
+      // Re-enable the generate button
+      const generateButton = document.getElementById('generate-btn');
+      generateButton.disabled = false;
     }
   }
   
@@ -659,5 +643,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     return title;
+  }
+
+  // Helper function to get stored API key
+  async function getStoredApiKey() {
+    const result = await chrome.storage.sync.get(['openai_api_key']);
+    return result.openai_api_key;
   }
 }); 

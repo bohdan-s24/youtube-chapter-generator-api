@@ -77,13 +77,17 @@ async function extractTranscript() {
     const panelOpened = await forceOpenTranscriptPanel();
     if (panelOpened) {
       console.log("Successfully opened transcript panel, waiting for it to load...");
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    } else {
-      console.log("Could not force open transcript panel, trying traditional approach...");
-      await tryOpenTranscriptPanel();
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Increased wait time
+      
+      // Try DOM extraction after panel is opened
+      transcript = await tryExtractTranscriptFromDOM();
+      if (transcript && Array.isArray(transcript) && transcript.length > 0) {
+        console.log("Successfully extracted transcript from opened panel");
+        return transcript;
+      }
     }
     
-    // Now try the DOM extraction more aggressively
+    // Now try the DOM extraction more aggressively with increased wait times
     for (let attempt = 0; attempt < 3; attempt++) {
       console.log(`DOM extraction attempt ${attempt+1}/3...`);
       
@@ -98,26 +102,16 @@ async function extractTranscript() {
         return transcript;
       }
       
-      // Wait a bit before trying again
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Wait longer between attempts
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
-    // If all attempts fail, check if we at least got something from the DOM
-    if (transcript && (typeof transcript === 'string' || 
-        (Array.isArray(transcript) && transcript.length > 0))) {
-      console.log("Got partial transcript data");
-      return transcript;
-    }
-    
-    // If DOM extraction fails, fallback to a basic approach
-    console.log("All extraction methods failed, using fallback metadata");
-    transcript = getFallbackTranscript(videoId);
-    return transcript;
+    // If all attempts fail, throw an error instead of returning fallback
+    throw new Error('Could not extract transcript after multiple attempts');
     
   } catch (error) {
     console.error("Error during transcript extraction:", error);
-    // Return a basic fallback even in case of errors
-    return getFallbackTranscript(videoId);
+    throw new Error(`Failed to extract transcript: ${error.message}`);
   }
 }
 
@@ -1186,104 +1180,7 @@ function findTranscriptButton() {
 
 // Fallback to get a basic transcript when DOM extraction fails
 function getFallbackTranscript(videoId) {
-  console.log("Using fallback transcript for video ID:", videoId);
-  
-  // Get video title as a backup
-  let title = '';
-  const titleElements = [
-    document.querySelector('h1.title'),
-    document.querySelector('h1.ytd-video-primary-info-renderer'),
-    document.querySelector('#title h1'),
-    document.querySelector('#title')
-  ];
-  
-  for (const element of titleElements) {
-    if (element) {
-      title = element.textContent.trim();
-      if (title) break;
-    }
-  }
-  
-  if (!title) {
-    title = 'YouTube Video';
-  }
-                
-  // Get video duration
-  let duration = '';
-  const durationElements = [
-    document.querySelector('.ytp-time-duration'),
-    document.querySelector('.ytd-video-primary-info-renderer .duration')
-  ];
-  
-  for (const element of durationElements) {
-    if (element) {
-      duration = element.textContent.trim();
-      if (duration) break;
-    }
-  }
-  
-  if (!duration) {
-    duration = '10:00';
-  }
-  
-  // Try to extract some text from the description
-  let description = '';
-  const descriptionElements = [
-    document.querySelector('#description-text'),
-    document.querySelector('#description'),
-    document.querySelector('.ytd-video-secondary-info-renderer'),
-    document.querySelector('[itemprop="description"]')
-  ];
-  
-  for (const element of descriptionElements) {
-    if (element) {
-      description = element.textContent.trim().substring(0, 2000);
-      if (description) break;
-    }
-  }
-  
-  if (!description) {
-    description = 'No description available';
-  }
-  
-  // Get channel name if possible
-  let channelName = '';
-  const channelElements = [
-    document.querySelector('#channel-name'),
-    document.querySelector('.ytd-channel-name'),
-    document.querySelector('[itemprop="author"]')
-  ];
-  
-  for (const element of channelElements) {
-    if (element) {
-      channelName = element.textContent.trim();
-      if (channelName) break;
-    }
-  }
-  
-  // Get video views if possible
-  let viewCount = '';
-  const viewElements = [
-    document.querySelector('.view-count'),
-    document.querySelector('.ytd-video-view-count-renderer')
-  ];
-  
-  for (const element of viewElements) {
-    if (element) {
-      viewCount = element.textContent.trim();
-      if (viewCount) break;
-    }
-  }
-  
-  // Create a composite text that might help the AI understand the video content
-  let fallbackText = `Video Title: ${title}\n`;
-  fallbackText += `Video ID: ${videoId}\n`;
-  if (duration) fallbackText += `Duration: ${duration}\n`;
-  if (channelName) fallbackText += `Channel: ${channelName}\n`;
-  if (viewCount) fallbackText += `Views: ${viewCount}\n`;
-  if (description) fallbackText += `Description: ${description}\n`;
-  
-  return fallbackText;
+  throw new Error('Could not extract transcript. Please ensure the video has captions enabled.');
 }
 
 // Function to extract timestamps from YouTube transcript panel
