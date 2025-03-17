@@ -61,19 +61,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Dynamic import OpenAI
+    // Dynamic imports
     const { OpenAI } = await import('openai');
+    const semver = await import('semver');
     
-    // Version checks
-    try {
-      const semver = await import('semver');
-      const REQUIRED_NODE_VERSION = '18.0.0';
-      if (!semver.gte(process.version, REQUIRED_NODE_VERSION)) {
-        throw new Error(`Node.js version ${REQUIRED_NODE_VERSION} or higher is required. Current version: ${process.version}`);
-      }
-    } catch (versionError) {
-      console.error('Version check error:', versionError);
-      // Continue execution even if version check fails
+    // Runtime version checks
+    const REQUIRED_NODE_VERSION = '18.0.0';
+    if (!semver.default.gte(process.version, REQUIRED_NODE_VERSION)) {
+      console.warn(`Node.js version ${REQUIRED_NODE_VERSION} or higher is recommended. Current version: ${process.version}`);
     }
 
     console.log('Request body:', {
