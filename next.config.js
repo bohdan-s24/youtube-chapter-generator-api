@@ -2,11 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
-  // Disable automatic static optimization for API routes
-  api: {
-    externalResolver: true,
-  },
-  // Configure API routes
+  // Configure API routes correctly
   async headers() {
     return [
       {
