@@ -5,6 +5,15 @@ const nextConfig = {
   // Disable automatic static optimization for API routes
   api: {
     externalResolver: true,
+  },
+  // Configure API routes
+  rewrites: async () => {
+    return [
+      {
+        source: '/api/:path*',
+        destination: '/api/:path*',
+      },
+    ];
   }
 }
 

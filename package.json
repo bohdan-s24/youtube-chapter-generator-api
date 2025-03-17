@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "next": "^14.1.0",
+    "openai": "^4.87.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "openai": "^4.28.0",
     "youtube-transcript": "^1.0.6"
   },
   "devDependencies": {
