@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import { OpenAI } from 'openai';
 
 // Helper function to format seconds to MM:SS or HH:MM:SS
 function formatTime(seconds) {
@@ -135,64 +135,65 @@ export default async function handler(req, res) {
       });
     }
 
-    // Create OpenAI client with new syntax
-    const openai = new OpenAI({
-      apiKey: apiKey
-    });
-
-    // Create a condensed version of the transcript for the prompt
-    const totalDuration = transcriptWithTimestamps[transcriptWithTimestamps.length - 1].time;
-    const segmentCount = transcriptWithTimestamps.length;
-    
-    // Sample transcript segments at regular intervals
-    const sampleSize = 20;
-    const sampledSegments = [];
-    const interval = Math.floor(segmentCount / sampleSize);
-    
-    for (let i = 0; i < segmentCount; i += interval) {
-      if (sampledSegments.length < sampleSize) {
-        sampledSegments.push(transcriptWithTimestamps[i]);
-      }
-    }
-
-    console.log('Sampled segments:', {
-      sampleSize,
-      actualSamples: sampledSegments.length,
-      firstSample: sampledSegments[0],
-      lastSample: sampledSegments[sampledSegments.length - 1]
-    });
-
-    // Prepare a more structured prompt for OpenAI
-    const prompt = `
-    Create YouTube chapters based on this video transcript.
-    Video duration: ${formatTime(totalDuration)}
-    Total segments: ${segmentCount}
-
-    Rules:
-    1. Create 5-8 evenly spaced chapters
-    2. First chapter must be "00:00 Introduction"
-    3. Each chapter must start with a timestamp in MM:SS format
-    4. Titles should be concise and descriptive (3-7 words)
-    5. Use actual timestamps from the transcript segments
-    6. Last chapter should not exceed ${formatTime(totalDuration)}
-
-    Sample transcript segments:
-    ${sampledSegments.map(seg => 
-      `[${seg.formattedTime}] ${seg.text}`
-    ).join('\n')}
-
-    Format each line exactly as: "MM:SS Title"
-    `;
-
-    console.log('Sending prompt to OpenAI:', {
-      promptLength: prompt.length,
-      model: "gpt-3.5-turbo",
-      temperature: 0.7,
-      maxTokens: 500
-    });
-
-    // Call OpenAI API with better error handling
     try {
+      // Create OpenAI client with new syntax
+      const openai = new OpenAI({
+        apiKey: apiKey,
+        dangerouslyAllowBrowser: true // Add this for browser support
+      });
+
+      // Create a condensed version of the transcript for the prompt
+      const totalDuration = transcriptWithTimestamps[transcriptWithTimestamps.length - 1].time;
+      const segmentCount = transcriptWithTimestamps.length;
+      
+      // Sample transcript segments at regular intervals
+      const sampleSize = 20;
+      const sampledSegments = [];
+      const interval = Math.floor(segmentCount / sampleSize);
+      
+      for (let i = 0; i < segmentCount; i += interval) {
+        if (sampledSegments.length < sampleSize) {
+          sampledSegments.push(transcriptWithTimestamps[i]);
+        }
+      }
+
+      console.log('Sampled segments:', {
+        sampleSize,
+        actualSamples: sampledSegments.length,
+        firstSample: sampledSegments[0],
+        lastSample: sampledSegments[sampledSegments.length - 1]
+      });
+
+      // Prepare a more structured prompt for OpenAI
+      const prompt = `
+      Create YouTube chapters based on this video transcript.
+      Video duration: ${formatTime(totalDuration)}
+      Total segments: ${segmentCount}
+
+      Rules:
+      1. Create 5-8 evenly spaced chapters
+      2. First chapter must be "00:00 Introduction"
+      3. Each chapter must start with a timestamp in MM:SS format
+      4. Titles should be concise and descriptive (3-7 words)
+      5. Use actual timestamps from the transcript segments
+      6. Last chapter should not exceed ${formatTime(totalDuration)}
+
+      Sample transcript segments:
+      ${sampledSegments.map(seg => 
+        `[${seg.formattedTime}] ${seg.text}`
+      ).join('\n')}
+
+      Format each line exactly as: "MM:SS Title"
+      `;
+
+      console.log('Sending prompt to OpenAI:', {
+        promptLength: prompt.length,
+        model: "gpt-3.5-turbo",
+        temperature: 0.7,
+        maxTokens: 500
+      });
+
+      // Call OpenAI API with better error handling
       const completion = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
         messages: [
