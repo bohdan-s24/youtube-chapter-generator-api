@@ -47,7 +47,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log('Request body:', req.body);
+    console.log('Request body:', {
+      hasVideoId: !!req.body.videoId,
+      hasTranscript: !!req.body.transcript,
+      transcriptType: typeof req.body.transcript,
+      transcriptLength: req.body.transcript ? (Array.isArray(req.body.transcript) ? req.body.transcript.length : req.body.transcript.length) : 0,
+      hasApiKey: !!req.body.openai_api_key
+    });
+
     const { videoId, transcript, openai_api_key } = req.body;
 
     if (!videoId && !transcript) {
@@ -104,6 +111,12 @@ export default async function handler(req, res) {
           ? [{ time: 0, text: transcriptResponse, formattedTime: '00:00' }]
           : [];
 
+    console.log('Processed transcript:', {
+      segmentCount: transcriptWithTimestamps.length,
+      firstSegment: transcriptWithTimestamps[0],
+      lastSegment: transcriptWithTimestamps[transcriptWithTimestamps.length - 1]
+    });
+
     // Validate that we have enough transcript data
     if (transcriptWithTimestamps.length === 0) {
       return res.status(400).json({ 
@@ -140,6 +153,13 @@ export default async function handler(req, res) {
       }
     }
 
+    console.log('Sampled segments:', {
+      sampleSize,
+      actualSamples: sampledSegments.length,
+      firstSample: sampledSegments[0],
+      lastSample: sampledSegments[sampledSegments.length - 1]
+    });
+
     // Prepare a more structured prompt for OpenAI
     const prompt = `
     Create YouTube chapters based on this video transcript.
@@ -162,6 +182,13 @@ export default async function handler(req, res) {
     Format each line exactly as: "MM:SS Title"
     `;
 
+    console.log('Sending prompt to OpenAI:', {
+      promptLength: prompt.length,
+      model: "gpt-3.5-turbo",
+      temperature: 0.7,
+      maxTokens: 500
+    });
+
     // Call OpenAI API with better error handling
     try {
       const completion = await openai.createChatCompletion({
@@ -179,7 +206,7 @@ export default async function handler(req, res) {
 
       // Process OpenAI response
       const chaptersText = completion.data.choices[0].message.content.trim();
-      console.log("Generated chapters: ", chaptersText);
+      console.log("Generated chapters text:", chaptersText);
 
       // Parse the chapters with improved regex
       const chapterLines = chaptersText.split('\n').filter(line => line.trim() !== '');
@@ -194,6 +221,8 @@ export default async function handler(req, res) {
         }
         return null;
       }).filter(Boolean);
+
+      console.log("Parsed chapters:", chapters);
 
       // Validate the generated chapters
       if (!chapters || chapters.length === 0) {
@@ -213,18 +242,27 @@ export default async function handler(req, res) {
         source: openai_api_key ? 'openai_direct' : 'server_api'
       });
     } catch (openaiError) {
-      console.error('Error calling OpenAI:', openaiError);
+      console.error('Error calling OpenAI:', {
+        error: openaiError.toString(),
+        response: openaiError.response?.data,
+        status: openaiError.response?.status
+      });
       return res.status(500).json({ 
         error: 'Failed to generate chapters with OpenAI', 
         details: openaiError.message,
+        openaiError: openaiError.response?.data,
         shouldUseLocalGeneration: true
       });
     }
   } catch (error) {
-    console.error('Error generating chapters:', error);
+    console.error('Error generating chapters:', {
+      error: error.toString(),
+      stack: error.stack
+    });
     return res.status(500).json({ 
       error: 'Failed to generate chapters', 
       details: error.message,
+      stack: error.stack,
       shouldUseLocalGeneration: true
     });
   }

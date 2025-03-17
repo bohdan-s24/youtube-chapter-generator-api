@@ -468,11 +468,19 @@ document.addEventListener('DOMContentLoaded', function() {
       const transcript = transcriptResponse.transcript;
       showDebugInfo(transcript);
       
+      chaptersContainer.innerHTML = '<p>Generating chapters...</p>';
+      
       // Get OpenAI API key if available
       const apiKey = await getStoredApiKey();
       
       // Try server API first
       try {
+        console.log('Sending request to API with transcript:', {
+          videoId,
+          transcriptLength: Array.isArray(transcript) ? transcript.length : transcript.length,
+          hasApiKey: !!apiKey
+        });
+        
         const response = await fetch('https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters', {
           method: 'POST',
           headers: {
@@ -485,11 +493,26 @@ document.addEventListener('DOMContentLoaded', function() {
           })
         });
         
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('API Response not OK:', {
+            status: response.status,
+            statusText: response.statusText,
+            body: errorText
+          });
+          throw new Error(`API Error (${response.status}): ${errorText}`);
+        }
+        
         const data = await response.json();
+        console.log('API Response:', data);
         
         if (data.error) {
           console.error('Server API error:', data);
           throw new Error(data.error);
+        }
+        
+        if (!data.chapters || !Array.isArray(data.chapters) || data.chapters.length === 0) {
+          throw new Error('No chapters were generated');
         }
         
         displayChapters(data);
@@ -499,6 +522,14 @@ document.addEventListener('DOMContentLoaded', function() {
         chaptersContainer.innerHTML = `
           <div class="error-message">
             <p>Error: ${error.message}</p>
+            <p>Debug Information:</p>
+            <pre>${JSON.stringify({
+              transcriptType: typeof transcript,
+              transcriptLength: Array.isArray(transcript) ? transcript.length : transcript.length,
+              hasApiKey: !!apiKey,
+              error: error.toString(),
+              stack: error.stack
+            }, null, 2)}</pre>
             <p>Please ensure:</p>
             <ul>
               <li>The video has captions enabled</li>
@@ -515,6 +546,11 @@ document.addEventListener('DOMContentLoaded', function() {
       chaptersContainer.innerHTML = `
         <div class="error-message">
           <p>Error: ${error.message}</p>
+          <p>Debug Information:</p>
+          <pre>${JSON.stringify({
+            error: error.toString(),
+            stack: error.stack
+          }, null, 2)}</pre>
           <p>Please ensure:</p>
           <ul>
             <li>The video has captions enabled</li>
