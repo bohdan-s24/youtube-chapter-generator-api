@@ -11,21 +11,33 @@ document.addEventListener('DOMContentLoaded', function() {
   const debugInfo = document.getElementById('debug-info');
   const debugContent = document.getElementById('debug-content');
   
-  // Add settings UI elements
+  // Add settings UI elements with improved layout and security features
   const settingsDiv = document.createElement('div');
   settingsDiv.className = 'settings-container hidden';
   settingsDiv.innerHTML = `
     <h3>Settings</h3>
     <div class="settings-row">
       <label for="openai-api-key">OpenAI API Key:</label>
-      <input type="password" id="openai-api-key" placeholder="sk-...">
+      <div class="api-key-input-container">
+        <input type="password" id="openai-api-key" placeholder="sk-...">
+        <button id="toggle-key-visibility" title="Toggle visibility" class="icon-button">👁️</button>
+      </div>
     </div>
+    <div id="api-key-validation" class="validation-message"></div>
     <div class="settings-info">
-      Your API key is stored locally and only used when the server API fails.
+      <p>Your API key is stored locally in your browser and never sent to our servers unless you generate chapters.</p>
+      <p>The API key is used only when the server API fails or for local generation.</p>
+    </div>
+    <div class="api-options">
+      <label>
+        <input type="checkbox" id="prefer-local-api" name="prefer-local-api">
+        Prefer using my API key directly (faster, more private)
+      </label>
     </div>
     <div class="settings-controls">
       <button id="save-settings-btn" class="secondary-btn">Save</button>
       <button id="cancel-settings-btn" class="secondary-btn">Cancel</button>
+      <button id="test-api-key-btn" class="secondary-btn">Test API Key</button>
     </div>
   `;
   
@@ -43,16 +55,109 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Settings elements
   const apiKeyInput = settingsDiv.querySelector('#openai-api-key');
+  const toggleKeyVisibilityBtn = settingsDiv.querySelector('#toggle-key-visibility');
+  const apiKeyValidation = settingsDiv.querySelector('#api-key-validation');
+  const preferLocalApiCheckbox = settingsDiv.querySelector('#prefer-local-api');
   const saveSettingsBtn = settingsDiv.querySelector('#save-settings-btn');
   const cancelSettingsBtn = settingsDiv.querySelector('#cancel-settings-btn');
+  const testApiKeyBtn = settingsDiv.querySelector('#test-api-key-btn');
+  
+  // Toggle password visibility
+  toggleKeyVisibilityBtn.addEventListener('click', function() {
+    if (apiKeyInput.type === 'password') {
+      apiKeyInput.type = 'text';
+      toggleKeyVisibilityBtn.textContent = '🔒';
+      toggleKeyVisibilityBtn.title = 'Hide API key';
+    } else {
+      apiKeyInput.type = 'password';
+      toggleKeyVisibilityBtn.textContent = '👁️';
+      toggleKeyVisibilityBtn.title = 'Show API key';
+    }
+  });
+  
+  // API key validation
+  apiKeyInput.addEventListener('input', function() {
+    validateApiKey(apiKeyInput.value);
+  });
+  
+  function validateApiKey(apiKey) {
+    // Clear previous validation message
+    apiKeyValidation.textContent = '';
+    apiKeyValidation.className = 'validation-message';
+    
+    // Empty keys are allowed (will use server API key)
+    if (!apiKey.trim()) {
+      return true;
+    }
+    
+    // Check for proper OpenAI API key format (starts with 'sk-' and is at least 12 chars)
+    if (!apiKey.startsWith('sk-') || apiKey.length < 12) {
+      apiKeyValidation.textContent = 'Invalid API key format. Should start with "sk-"';
+      apiKeyValidation.className = 'validation-message error';
+      return false;
+    }
+    
+    apiKeyValidation.textContent = 'API key format valid';
+    apiKeyValidation.className = 'validation-message success';
+    return true;
+  }
+  
+  // Test API key function
+  testApiKeyBtn.addEventListener('click', async function() {
+    const apiKey = apiKeyInput.value.trim();
+    
+    if (!apiKey) {
+      apiKeyValidation.textContent = 'Please enter an API key to test';
+      apiKeyValidation.className = 'validation-message error';
+      return;
+    }
+    
+    if (!validateApiKey(apiKey)) {
+      return;
+    }
+    
+    testApiKeyBtn.disabled = true;
+    testApiKeyBtn.textContent = 'Testing...';
+    apiKeyValidation.textContent = 'Testing API key...';
+    apiKeyValidation.className = 'validation-message';
+    
+    try {
+      const response = await fetch('https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/test-openai', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ openai_api_key: apiKey })
+      });
+      
+      const result = await response.json();
+      
+      if (response.ok && result.success) {
+        apiKeyValidation.textContent = 'API key is valid! ' + (result.model ? `Connected to model: ${result.model}` : '');
+        apiKeyValidation.className = 'validation-message success';
+      } else {
+        apiKeyValidation.textContent = `API key error: ${result.error || 'Unknown error'}`;
+        apiKeyValidation.className = 'validation-message error';
+      }
+    } catch (error) {
+      apiKeyValidation.textContent = `Connection error: ${error.message}`;
+      apiKeyValidation.className = 'validation-message error';
+    } finally {
+      testApiKeyBtn.disabled = false;
+      testApiKeyBtn.textContent = 'Test API Key';
+    }
+  });
   
   // Settings event listeners
   settingsIcon.addEventListener('click', function() {
-    // Load saved API key from storage
-    chrome.storage.sync.get(['openai_api_key'], function(result) {
+    // Load saved API key and preferences from storage
+    chrome.storage.sync.get(['openai_api_key', 'prefer_local_api'], function(result) {
       if (result.openai_api_key) {
         apiKeyInput.value = result.openai_api_key;
+        validateApiKey(result.openai_api_key);
       }
+      
+      preferLocalApiCheckbox.checked = !!result.prefer_local_api;
     });
     
     settingsDiv.classList.remove('hidden');
@@ -62,9 +167,17 @@ document.addEventListener('DOMContentLoaded', function() {
   saveSettingsBtn.addEventListener('click', function() {
     const apiKey = apiKeyInput.value.trim();
     
-    // Save API key to Chrome's sync storage
-    chrome.storage.sync.set({ openai_api_key: apiKey }, function() {
-      console.log('API key saved');
+    // Validate the API key before saving
+    if (apiKey && !validateApiKey(apiKey)) {
+      return; // Don't save invalid API key
+    }
+    
+    // Save settings to Chrome's sync storage
+    chrome.storage.sync.set({ 
+      openai_api_key: apiKey,
+      prefer_local_api: preferLocalApiCheckbox.checked
+    }, function() {
+      console.log('Settings saved');
     });
     
     settingsDiv.classList.add('hidden');
@@ -383,6 +496,18 @@ document.addEventListener('DOMContentLoaded', function() {
     copyBtn.disabled = false;
     hideLoading();
   }
+  
+  // Function to display results from the API or local generation
+  function displayResults(chapters) {
+    // If chapters is already an array, wrap it in a data object
+    // If it's a data object with chapters property, use it directly
+    const data = Array.isArray(chapters) 
+      ? { chapters: chapters, source: 'server_api' } 
+      : chapters;
+    
+    // Use the displayChapters function for actual rendering
+    displayChapters(data);
+  }
 
   // Show loading state
   function showLoading(message = 'Generating chapters...') {
@@ -470,10 +595,26 @@ document.addEventListener('DOMContentLoaded', function() {
       
       chaptersContainer.innerHTML = '<p>Generating chapters...</p>';
       
-      // Get OpenAI API key if available
-      const apiKey = await getStoredApiKey();
+      // Get OpenAI API key and preferences
+      const settings = await chrome.storage.sync.get(['openai_api_key', 'prefer_local_api']);
+      const apiKey = settings.openai_api_key;
+      const preferLocalApi = settings.prefer_local_api;
       
-      // Try server API first
+      // If user prefers to use their API key directly and has provided one, use local generation
+      if (preferLocalApi && apiKey) {
+        console.log('Using local generation with user API key as preferred');
+        try {
+          const chapters = await generateChaptersLocally(transcript, apiKey);
+          displayResults(chapters);
+          return;
+        } catch (localError) {
+          console.error('Local generation failed:', localError);
+          chaptersContainer.innerHTML = '<p>Local generation failed. Trying server API...</p>';
+          // Fall through to server API
+        }
+      }
+      
+      // Try server API if local generation wasn't used or failed
       try {
         console.log('Sending request to API with transcript:', {
           videoId,
@@ -500,74 +641,72 @@ document.addEventListener('DOMContentLoaded', function() {
             statusText: response.statusText,
             body: errorText
           });
-          throw new Error(`API Error (${response.status}): ${errorText}`);
+          
+          let errorData;
+          try {
+            errorData = JSON.parse(errorText);
+          } catch (e) {
+            errorData = { error: 'Unknown error', details: errorText };
+          }
+          
+          // If server indicates we should use local generation (e.g., rate limit)
+          if (errorData && errorData.shouldUseLocalGeneration && apiKey) {
+            console.log('Server suggested local generation, attempting...');
+            chaptersContainer.innerHTML = '<p>Server API unavailable. Using local generation...</p>';
+            const chapters = await generateChaptersLocally(transcript, apiKey);
+            displayResults(chapters);
+            return;
+          }
+          
+          throw new Error(errorData?.error || 'API request failed');
         }
         
         const data = await response.json();
         console.log('API Response:', data);
         
-        if (data.error) {
-          console.error('Server API error:', data);
-          throw new Error(data.error);
+        if (!data.chapters || data.chapters.length === 0) {
+          throw new Error('No chapters generated');
         }
         
-        if (!data.chapters || !Array.isArray(data.chapters) || data.chapters.length === 0) {
-          throw new Error('No chapters were generated');
+        displayResults(data.chapters);
+      } catch (apiError) {
+        console.error('API error:', apiError);
+        
+        // If we have an API key, try local generation as fallback
+        if (apiKey) {
+          console.log('Falling back to local generation...');
+          chaptersContainer.innerHTML = '<p>Remote API failed. Using local generation...</p>';
+          try {
+            const chapters = await generateChaptersLocally(transcript, apiKey);
+            displayResults(chapters);
+          } catch (localError) {
+            console.error('Local generation failed:', localError);
+            throw new Error(`API request failed and local generation failed: ${localError.message}`);
+          }
+        } else {
+          throw apiError;
         }
-        
-        displayChapters(data);
-        
-      } catch (error) {
-        console.error('Failed to generate chapters:', error);
-        chaptersContainer.innerHTML = `
-          <div class="error-message">
-            <p>Error: ${error.message}</p>
-            <p>Debug Information:</p>
-            <pre>${JSON.stringify({
-              transcriptType: typeof transcript,
-              transcriptLength: Array.isArray(transcript) ? transcript.length : transcript.length,
-              hasApiKey: !!apiKey,
-              error: error.toString(),
-              stack: error.stack
-            }, null, 2)}</pre>
-            <p>Please ensure:</p>
-            <ul>
-              <li>The video has captions enabled</li>
-              <li>You are on a valid YouTube video page</li>
-              <li>Your internet connection is stable</li>
-            </ul>
-          </div>
-        `;
       }
-      
     } catch (error) {
-      console.error('Error:', error);
-      const chaptersContainer = document.getElementById('chapters-container');
-      chaptersContainer.innerHTML = `
-        <div class="error-message">
-          <p>Error: ${error.message}</p>
-          <p>Debug Information:</p>
-          <pre>${JSON.stringify({
-            error: error.toString(),
-            stack: error.stack
-          }, null, 2)}</pre>
-          <p>Please ensure:</p>
-          <ul>
-            <li>The video has captions enabled</li>
-            <li>You are on a valid YouTube video page</li>
-            <li>Your internet connection is stable</li>
-          </ul>
-        </div>
-      `;
-    } finally {
-      // Re-enable the generate button
+      console.error('Generate chapters error:', error);
+      
+      // Re-enable generate button
       const generateButton = document.getElementById('generate-btn');
       generateButton.disabled = false;
+      
+      // Show error message
+      const errorElement = document.getElementById('error-message');
+      errorElement.textContent = error.message;
+      errorElement.classList.remove('hidden');
+      
+      // Clear loading status
+      const chaptersContainer = document.getElementById('chapters-container');
+      chaptersContainer.innerHTML = '';
     }
   }
   
-  // Function to generate chapters locally
-  async function generateChaptersLocally(transcript) {
+  // Refactored version of generateChaptersLocally to accept API key parameter
+  async function generateChaptersLocally(transcript, apiKey) {
     console.log('Generating chapters locally from transcript');
     showLoading('Generating chapters locally...');
     
@@ -582,68 +721,234 @@ document.addEventListener('DOMContentLoaded', function() {
         throw new Error('Invalid transcript format for local generation');
       }
       
+      // Ensure API key is provided
+      if (!apiKey) {
+        throw new Error('OpenAI API key is required for local generation');
+      }
+      
       // Get total duration from last segment
       const lastSegment = transcript[transcript.length - 1];
       const totalDuration = lastSegment.start + (lastSegment.duration || 0);
       
-      // Calculate roughly 5-8 chapters based on video length
-      const numChapters = Math.min(8, Math.max(5, Math.floor(totalDuration / 300))); // One chapter every ~5 minutes
-      const interval = Math.floor(transcript.length / numChapters);
-      
-      const chapters = [];
-      let currentIndex = 0;
-      
-      // Always include the first segment as "Introduction"
-      chapters.push({
-        time: formatTimestamp(transcript[0].start),
-        title: "Introduction"
-      });
-      
-      // Generate chapters at intervals
-      for (let i = 1; i < numChapters - 1; i++) {
-        currentIndex += interval;
-        if (currentIndex >= transcript.length) break;
+      // If we have a valid API key, use OpenAI to generate better chapters
+      try {
+        const formattedTranscript = formatTranscriptForPrompt(transcript, totalDuration);
+        const chapters = await generateChaptersWithOpenAI(formattedTranscript, apiKey, totalDuration);
         
-        const segment = transcript[currentIndex];
-        const surroundingText = transcript
-          .slice(Math.max(0, currentIndex - 2), Math.min(transcript.length, currentIndex + 3))
-          .map(s => s.text)
-          .join(' ');
-        
-        const title = createTitleFromText(surroundingText);
-        chapters.push({
-          time: formatTimestamp(segment.start),
-          title: title
+        // Display the AI-generated chapters
+        displayChapters({
+          chapters: chapters,
+          source: 'openai_direct'
         });
-      }
-      
-      // Add a final chapter if we have room and haven't reached the end
-      if (chapters.length < numChapters && 
-          currentIndex + interval < transcript.length - 10) {
-        const finalIndex = transcript.length - 10;
-        const finalSegment = transcript[finalIndex];
-        const finalText = transcript
-          .slice(finalIndex, Math.min(transcript.length, finalIndex + 5))
-          .map(s => s.text)
-          .join(' ');
         
-        chapters.push({
-          time: formatTimestamp(finalSegment.start),
-          title: createTitleFromText(finalText)
-        });
+        return chapters;
+      } catch (openaiError) {
+        console.error('OpenAI API error:', openaiError);
+        console.log('Falling back to basic chapter generation...');
+        
+        // Fall back to basic chapter generation if OpenAI fails
+        return generateBasicChapters(transcript, totalDuration);
       }
-      
-      // Display the locally generated chapters
-      displayChapters({
-        chapters: chapters,
-        source: 'local'
-      });
-      
     } catch (error) {
       console.error('Error in local generation:', error);
       showError('Failed to generate chapters locally: ' + error.message);
       hideLoading();
+      throw error;
     }
+  }
+  
+  // Function to format transcript for OpenAI prompt
+  function formatTranscriptForPrompt(transcript, totalDuration) {
+    // Calculate number of samples based on transcript length
+    const transcriptLength = transcript.length;
+    const sampleCount = Math.min(50, Math.max(20, Math.floor(transcriptLength / 100)));
+    const sampleInterval = Math.floor(transcriptLength / sampleCount);
+    
+    // Sample transcript at regular intervals
+    const samples = [];
+    for (let i = 0; i < transcriptLength; i += sampleInterval) {
+      if (samples.length < sampleCount) {
+        const segment = transcript[i];
+        if (segment && segment.text && segment.start !== undefined) {
+          samples.push({
+            time: formatTimestamp(segment.start),
+            text: segment.text.trim()
+          });
+        }
+      }
+    }
+    
+    // Ensure we have the first segment
+    if (samples.length > 0 && transcript[0] && samples[0].time !== formatTimestamp(transcript[0].start)) {
+      samples.unshift({
+        time: formatTimestamp(transcript[0].start),
+        text: transcript[0].text.trim()
+      });
+    }
+    
+    // Ensure we have the last segment
+    if (samples.length > 0 && transcript[transcriptLength - 1]) {
+      const lastTime = formatTimestamp(transcript[transcriptLength - 1].start);
+      if (samples[samples.length - 1].time !== lastTime) {
+        samples.push({
+          time: lastTime,
+          text: transcript[transcriptLength - 1].text.trim()
+        });
+      }
+    }
+    
+    // Format samples into a string
+    return samples.map(sample => `[${sample.time}] ${sample.text}`).join('\n');
+  }
+  
+  // Function to generate chapters using OpenAI API
+  async function generateChaptersWithOpenAI(sampledTranscript, apiKey, totalDuration) {
+    try {
+      // Prepare system and user messages for better chapter generation
+      const systemMessage = {
+        role: "system",
+        content: "You are a YouTube chapter generator. Your task is to analyze video transcripts and create concise, meaningful chapter titles. Each chapter must have a timestamp and a descriptive title. The first chapter should always be '00:00 Introduction'."
+      };
+      
+      const userMessage = {
+        role: "user",
+        content: `
+Create YouTube chapters based on this video transcript.
+Video duration: ${formatTimestamp(totalDuration)}
+
+GUIDELINES:
+- Create 5-8 evenly spaced chapters
+- First chapter must be "00:00 Introduction"
+- Each chapter must start with a timestamp in MM:SS or HH:MM:SS format
+- Titles should be concise, descriptive and engaging (3-6 words)
+- Use actual timestamps from the transcript
+- Last chapter should not exceed ${formatTimestamp(totalDuration)}
+- Avoid generic titles like "Conclusion" or "Summary"
+- Make titles clear and specific to the content
+
+TRANSCRIPT SEGMENTS:
+${sampledTranscript}
+
+FORMAT:
+Return chapter timestamps and titles only, one per line, in this exact format:
+MM:SS Title
+OR
+HH:MM:SS Title
+`
+      };
+      
+      // Call OpenAI API directly
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: "gpt-3.5-turbo",
+          messages: [systemMessage, userMessage],
+          temperature: 0.7,
+          max_tokens: 500
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`OpenAI API error: ${errorData.error?.message || response.statusText}`);
+      }
+      
+      const data = await response.json();
+      const chaptersText = data.choices[0].message.content.trim();
+      
+      // Parse the chapter lines
+      const chapterLines = chaptersText.split('\n').filter(line => line.trim() !== '');
+      const chapters = [];
+      
+      // Parse each line into a chapter object
+      for (const line of chapterLines) {
+        // Use regex to match the timestamp and title
+        const match = line.match(/^(\d{1,2}:\d{2}(?::\d{2})?)\s+(.+)$/);
+        if (match) {
+          chapters.push({
+            time: match[1],
+            title: match[2]
+          });
+        }
+      }
+      
+      // Ensure we have at least one chapter (Introduction)
+      if (chapters.length === 0) {
+        chapters.push({
+          time: "00:00",
+          title: "Introduction"
+        });
+      }
+      
+      return chapters;
+    } catch (error) {
+      console.error('Error generating chapters with OpenAI:', error);
+      throw error;
+    }
+  }
+  
+  // Function to generate basic chapters without AI
+  function generateBasicChapters(transcript, totalDuration) {
+    console.log('Generating basic chapters from transcript timestamps');
+    
+    // Calculate roughly 5-8 chapters based on video length
+    const numChapters = Math.min(8, Math.max(5, Math.floor(totalDuration / 300))); // One chapter every ~5 minutes
+    const interval = Math.floor(transcript.length / numChapters);
+    
+    const chapters = [];
+    let currentIndex = 0;
+    
+    // Always include the first segment as "Introduction"
+    chapters.push({
+      time: formatTimestamp(transcript[0].start),
+      title: "Introduction"
+    });
+    
+    // Generate chapters at intervals
+    for (let i = 1; i < numChapters - 1; i++) {
+      currentIndex += interval;
+      if (currentIndex >= transcript.length) break;
+      
+      const segment = transcript[currentIndex];
+      const surroundingText = transcript
+        .slice(Math.max(0, currentIndex - 2), Math.min(transcript.length, currentIndex + 3))
+        .map(s => s.text)
+        .join(' ');
+      
+      const title = createTitleFromText(surroundingText);
+      chapters.push({
+        time: formatTimestamp(segment.start),
+        title: title
+      });
+    }
+    
+    // Add a final chapter if we have room and haven't reached the end
+    if (chapters.length < numChapters && 
+        currentIndex + interval < transcript.length - 10) {
+      const finalIndex = transcript.length - 10;
+      const finalSegment = transcript[finalIndex];
+      const finalText = transcript
+        .slice(finalIndex, Math.min(transcript.length, finalIndex + 5))
+        .map(s => s.text)
+        .join(' ');
+      
+      chapters.push({
+        time: formatTimestamp(finalSegment.start),
+        title: createTitleFromText(finalText)
+      });
+    }
+    
+    // Display the locally generated chapters
+    displayChapters({
+      chapters: chapters,
+      source: 'local'
+    });
+    
+    return chapters;
   }
 
   // Helper to create a chapter title from transcript text

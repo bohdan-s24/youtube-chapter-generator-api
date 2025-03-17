@@ -3,6 +3,15 @@
 // Notify that the content script has loaded
 console.log("YouTube Chapter Generator content script loaded");
 
+// Configuration constants
+const CONFIG = {
+  MAX_EXTRACTION_ATTEMPTS: 3,
+  INITIAL_RETRY_DELAY: 1000,
+  MAX_RETRY_DELAY: 5000,
+  TRANSCRIPT_PANEL_WAIT_TIME: 2500,
+  DEFAULT_LANGUAGE: 'en'
+};
+
 // Add a message listener to receive commands from the popup
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   console.log("Content script received message:", request);
@@ -16,7 +25,7 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     // Extract transcript from the page
     console.log("Received request to extract transcript");
     
-    extractTranscript()
+    extractTranscript(request.options || {})
       .then(transcript => {
         console.log("Transcript extraction successful, length:", 
                    typeof transcript === 'string' ? transcript.length : 
@@ -27,7 +36,8 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
         console.error('Failed to extract transcript:', error);
         sendResponse({ 
           success: false, 
-          error: error.message || 'Unknown error during transcript extraction' 
+          error: error.message || 'Unknown error during transcript extraction',
+          errorType: error.name || 'ExtractError'
         });
       });
     
@@ -51,72 +61,86 @@ function getVideoIdFromUrl(url) {
   }
 }
 
+// Helper function to implement exponential backoff with jitter
+function getBackoffDelay(attempt) {
+  const baseDelay = Math.min(
+    CONFIG.MAX_RETRY_DELAY,
+    CONFIG.INITIAL_RETRY_DELAY * Math.pow(2, attempt)
+  );
+  // Add jitter to avoid multiple scripts hitting at the same time
+  return baseDelay + Math.floor(Math.random() * 1000);
+}
+
 // Function to extract transcript from YouTube page
-async function extractTranscript() {
-  console.log("Starting transcript extraction...");
+async function extractTranscript(options = {}) {
+  console.log("Starting transcript extraction with options:", options);
+  
+  // Create a custom error type for transcript extraction failures
+  class TranscriptExtractionError extends Error {
+    constructor(message, method) {
+      super(message);
+      this.name = 'TranscriptExtractionError';
+      this.extractionMethod = method;
+    }
+  }
   
   // Get the video ID from the URL
   const videoId = getVideoIdFromUrl(window.location.href);
   if (!videoId) {
-    throw new Error('Could not extract video ID from URL');
+    throw new TranscriptExtractionError('Could not extract video ID from URL', 'url_parsing');
   }
   
-  try {
-    // First attempt: Direct extraction from YouTube's transcript API
-    console.log("Attempting direct extraction...");
-    let transcript = await attemptDirectExtraction(videoId);
-    if (transcript && 
-        (Array.isArray(transcript) && transcript.length > 0) && 
-        transcript[0].hasOwnProperty('text')) {
-      console.log("Direct extraction successful with text segments");
-      return transcript;
-    }
+  const extractionMethods = [
+    { name: 'api', fn: attemptDirectExtraction, priority: 1 },
+    { name: 'panel', fn: extractFromTranscriptPanel, priority: 2 },
+    { name: 'dom', fn: tryExtractTranscriptFromDOM, priority: 3 }
+  ];
+  
+  // Sort methods by priority
+  extractionMethods.sort((a, b) => a.priority - b.priority);
+  
+  let lastError = null;
+  
+  // Try each extraction method with retries
+  for (const method of extractionMethods) {
+    console.log(`Attempting extraction using method: ${method.name}`);
     
-    // Explicitly try to open the transcript panel with our new direct approach
-    console.log("Direct extraction failed or returned incomplete data, trying to force open transcript panel...");
-    const panelOpened = await forceOpenTranscriptPanel();
-    if (panelOpened) {
-      console.log("Successfully opened transcript panel, waiting for it to load...");
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Increased wait time
-      
-      // Try DOM extraction after panel is opened
-      transcript = await tryExtractTranscriptFromDOM();
-      if (transcript && Array.isArray(transcript) && transcript.length > 0) {
-        console.log("Successfully extracted transcript from opened panel");
-        return transcript;
+    for (let attempt = 0; attempt < CONFIG.MAX_EXTRACTION_ATTEMPTS; attempt++) {
+      try {
+        // If not the first attempt, wait with backoff
+        if (attempt > 0) {
+          const delay = getBackoffDelay(attempt);
+          console.log(`Retry ${attempt+1}/${CONFIG.MAX_EXTRACTION_ATTEMPTS} for ${method.name} method, waiting ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        // Call the extraction method
+        const transcript = await method.fn(videoId, options);
+        
+        // Validate transcript
+        if (transcript && 
+            ((Array.isArray(transcript) && transcript.length > 0 && transcript[0].hasOwnProperty('text')) ||
+             (typeof transcript === 'string' && transcript.length > 100))) {
+          console.log(`Extraction successful using ${method.name} method on attempt ${attempt+1}`);
+          return transcript;
+        }
+        
+        throw new TranscriptExtractionError(`Invalid transcript format from ${method.name} method`, method.name);
+      } catch (error) {
+        console.log(`Extraction failed using ${method.name} method on attempt ${attempt+1}: ${error.message}`);
+        lastError = error;
       }
     }
-    
-    // Now try the DOM extraction more aggressively with increased wait times
-    for (let attempt = 0; attempt < 3; attempt++) {
-      console.log(`DOM extraction attempt ${attempt+1}/3...`);
-      
-      // Try the DOM structure extraction
-      transcript = await tryExtractTranscriptFromDOM();
-      
-      // If we got structured data with text fields, return it
-      if (transcript && Array.isArray(transcript) && 
-          transcript.length > 0 && 
-          transcript[0].hasOwnProperty('text')) {
-        console.log(`DOM extraction successful on attempt ${attempt+1}`);
-        return transcript;
-      }
-      
-      // Wait longer between attempts
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    
-    // If all attempts fail, throw an error instead of returning fallback
-    throw new Error('Could not extract transcript after multiple attempts');
-    
-  } catch (error) {
-    console.error("Error during transcript extraction:", error);
-    throw new Error(`Failed to extract transcript: ${error.message}`);
   }
+  
+  // If we get here, all extraction methods have failed
+  const errorMessage = lastError ? lastError.message : 'All transcript extraction methods failed';
+  console.error("Transcript extraction completely failed:", errorMessage);
+  throw new TranscriptExtractionError(errorMessage, 'all_methods');
 }
 
 // Attempts to extract transcript directly from YouTube's internal data
-async function attemptDirectExtraction(videoId) {
+async function attemptDirectExtraction(videoId, options = {}) {
   try {
     // METHOD 0: Using YouTube's transcript API directly (most reliable method)
     console.log("Attempting to extract transcript using YouTube's API endpoint...");
@@ -1212,6 +1236,34 @@ function getTimestampSecondsFromString(timestampStr) {
   } catch (e) {
     console.error("Error parsing timestamp:", timestampStr, e);
     return 0;
+  }
+}
+
+// New function to extract transcript from panel with improved reliability
+async function extractFromTranscriptPanel(videoId, options = {}) {
+  console.log("Attempting to extract transcript by opening the transcript panel...");
+  
+  try {
+    // Try to open the transcript panel
+    const panelOpened = await forceOpenTranscriptPanel();
+    if (!panelOpened) {
+      throw new Error("Failed to open transcript panel");
+    }
+    
+    console.log("Successfully opened transcript panel, waiting for it to load...");
+    await new Promise(resolve => setTimeout(resolve, CONFIG.TRANSCRIPT_PANEL_WAIT_TIME));
+    
+    // Try DOM extraction after panel is opened
+    const transcript = await tryExtractTranscriptFromDOM(videoId, options);
+    if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
+      throw new Error("Failed to extract transcript from opened panel");
+    }
+    
+    console.log(`Successfully extracted ${transcript.length} segments from transcript panel`);
+    return transcript;
+  } catch (error) {
+    console.error("Error extracting transcript from panel:", error);
+    throw error;
   }
 }
 
