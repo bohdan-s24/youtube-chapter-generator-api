@@ -1,4 +1,4 @@
-import { Configuration, OpenAIApi } from 'openai';
+import OpenAI from 'openai';
 
 // Helper function to format seconds to MM:SS or HH:MM:SS
 function formatTime(seconds) {
@@ -135,8 +135,10 @@ export default async function handler(req, res) {
       });
     }
 
-    const configuration = new Configuration({ apiKey });
-    const openai = new OpenAIApi(configuration);
+    // Create OpenAI client with new syntax
+    const openai = new OpenAI({
+      apiKey: apiKey
+    });
 
     // Create a condensed version of the transcript for the prompt
     const totalDuration = transcriptWithTimestamps[transcriptWithTimestamps.length - 1].time;
@@ -191,7 +193,7 @@ export default async function handler(req, res) {
 
     // Call OpenAI API with better error handling
     try {
-      const completion = await openai.createChatCompletion({
+      const completion = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
         messages: [
           { 
@@ -204,8 +206,8 @@ export default async function handler(req, res) {
         max_tokens: 500
       });
 
-      // Process OpenAI response
-      const chaptersText = completion.data.choices[0].message.content.trim();
+      // Process OpenAI response with updated response format
+      const chaptersText = completion.choices[0].message.content.trim();
       console.log("Generated chapters text:", chaptersText);
 
       // Parse the chapters with improved regex

@@ -35,21 +35,4 @@
       "js": ["content.js"]
     }
   ]
-}    ├── extension/
-│   ├── src/
-│   │   ├── popup.js
-│   │   ├── popup.html
-│   │   ├── popup.css
-│   │   ├── content.js
-│   │   └── background.js
-│   ├── public/
-│   │   ├── manifest.json
-│   │   └── icons/
-│   └── scripts/
-│       └── package-extension.js
-├── pages/
-│   └── api/
-│       └── generate-chapters.js
-├── package.json
-├── next.config.js
-└── vercel.json
+} 
