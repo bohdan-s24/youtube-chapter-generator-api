@@ -8,13 +8,17 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "package-extension": "node scripts/package-extension.js"
+    "package-extension": "node scripts/package-extension.js",
+    "test:openai": "node scripts/test-openai.js",
+    "test:api": "curl -X GET http://localhost:3000/api/test",
+    "clean": "rm -rf .next node_modules && npm install"
   },
   "dependencies": {
     "next": "^14.1.0",
+    "openai": "^4.28.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "openai": "^4.28.0",
+    "semver": "^7.7.1",
     "youtube-transcript": "^1.0.6"
   },
   "devDependencies": {

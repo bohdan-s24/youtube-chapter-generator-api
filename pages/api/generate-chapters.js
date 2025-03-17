@@ -1,5 +1,18 @@
 import { OpenAI } from 'openai';
 
+// Add version check
+const REQUIRED_NODE_VERSION = '18.0.0';
+const currentVersion = process.version;
+if (!require('semver').gte(currentVersion, REQUIRED_NODE_VERSION)) {
+  throw new Error(`Node.js version ${REQUIRED_NODE_VERSION} or higher is required. Current version: ${currentVersion}`);
+}
+
+// Add OpenAI version check
+const OPENAI_VERSION = require('openai/package.json').version;
+if (!OPENAI_VERSION.startsWith('4.')) {
+  throw new Error(`OpenAI package version 4.x is required. Current version: ${OPENAI_VERSION}`);
+}
+
 // Helper function to format seconds to MM:SS or HH:MM:SS
 function formatTime(seconds) {
   const hours = Math.floor(seconds / 3600);
@@ -126,21 +139,35 @@ export default async function handler(req, res) {
       });
     }
 
-    // Initialize OpenAI with either provided key or environment variable
-    const apiKey = openai_api_key || process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(400).json({ 
-        error: 'OpenAI API key not provided', 
-        shouldUseLocalGeneration: true 
-      });
-    }
-
+    // Initialize OpenAI with better error handling
     try {
-      // Create OpenAI client with new syntax
+      const apiKey = openai_api_key || process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        console.error('OpenAI API key not provided');
+        return res.status(400).json({ 
+          error: 'OpenAI API key not provided', 
+          shouldUseLocalGeneration: true 
+        });
+      }
+
+      console.log('Initializing OpenAI client...');
+      console.log('Environment:', {
+        nodeVersion: process.version,
+        openaiVersion: OPENAI_VERSION,
+        environment: process.env.NODE_ENV
+      });
+
       const openai = new OpenAI({
         apiKey: apiKey,
-        dangerouslyAllowBrowser: true // Add this for browser support
+        dangerouslyAllowBrowser: true
       });
+
+      // Verify OpenAI client
+      if (!openai || !openai.chat || !openai.chat.completions) {
+        throw new Error('OpenAI client not properly initialized');
+      }
+
+      console.log('OpenAI client initialized successfully');
 
       // Create a condensed version of the transcript for the prompt
       const totalDuration = transcriptWithTimestamps[transcriptWithTimestamps.length - 1].time;
@@ -245,14 +272,17 @@ export default async function handler(req, res) {
         source: openai_api_key ? 'openai_direct' : 'server_api'
       });
     } catch (openaiError) {
-      console.error('Error calling OpenAI:', {
-        error: openaiError.toString(),
-        response: openaiError.response?.data,
-        status: openaiError.response?.status
+      console.error('OpenAI Error:', {
+        name: openaiError.name,
+        message: openaiError.message,
+        stack: openaiError.stack,
+        response: openaiError.response?.data
       });
+
       return res.status(500).json({ 
-        error: 'Failed to generate chapters with OpenAI', 
+        error: 'Failed to initialize or use OpenAI', 
         details: openaiError.message,
+        name: openaiError.name,
         openaiError: openaiError.response?.data,
         shouldUseLocalGeneration: true
       });
