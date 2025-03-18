@@ -140,7 +140,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // API endpoint
-  const API_ENDPOINT = 'https://youtube-chapter-generator-api.vercel.app/api/generate-chapters';
+  const API_ENDPOINT = 'https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters';
 
   // Check if we're on a YouTube page
   function checkYouTubePage(callback) {
