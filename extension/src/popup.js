@@ -140,7 +140,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // API endpoint
-  const API_ENDPOINT = 'https://youtube-chapter-generator-qwtz6ye0h-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters';
+  const API_ENDPOINT = 'https://youtube-chapter-generator-api.vercel.app/api/generate-chapters';
 
   // Check if we're on a YouTube page
   function checkYouTubePage(callback) {
@@ -459,6 +459,10 @@ document.addEventListener('DOMContentLoaded', function() {
       const transcript = transcriptResponse.transcript;
       showDebugInfo(transcript);
       
+      // Format transcript properly for the API
+      const formattedData = formatTranscriptForAPI(transcript, videoId);
+      console.log("Formatted transcript for API:", formattedData);
+      
       // First try the server API
       showLoading('Generating chapters with AI...');
       try {
@@ -469,7 +473,9 @@ document.addEventListener('DOMContentLoaded', function() {
           },
           body: JSON.stringify({
             videoId: videoId,
-            transcript: transcript
+            transcript: formattedData.transcript,
+            useTimestamps: true,
+            format: formattedData.format
           })
         });
         
@@ -513,8 +519,11 @@ document.addEventListener('DOMContentLoaded', function() {
               },
               body: JSON.stringify({
                 videoId: videoId,
-                transcript: transcript,
-                openai_api_key: result.openai_api_key
+                transcript: formattedData.transcript,
+                useTimestamps: true,
+                format: formattedData.format,
+                openai_api_key: result.openai_api_key,
+                use_openai_direct: true
               })
             });
             
