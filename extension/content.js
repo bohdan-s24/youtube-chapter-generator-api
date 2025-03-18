@@ -16,7 +16,18 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     // Extract transcript from the page
     console.log("Received request to extract transcript");
     
-    extractTranscript()
+    // Get current video ID
+    const currentVideoId = getVideoIdFromUrl(window.location.href);
+    if (!currentVideoId) {
+      sendResponse({ 
+        success: false, 
+        error: 'Could not get video ID from current page' 
+      });
+      return true;
+    }
+    
+    // Extract transcript
+    extractTranscript(currentVideoId)
       .then(transcript => {
         console.log("Transcript extraction successful, length:", 
                    typeof transcript === 'string' ? transcript.length : 
@@ -44,7 +55,9 @@ function getVideoIdFromUrl(url) {
   try {
     const urlObj = new URL(url);
     const searchParams = new URLSearchParams(urlObj.search);
-    return searchParams.get('v');
+    const videoId = searchParams.get('v');
+    console.log("Extracted video ID:", videoId);
+    return videoId;
   } catch (error) {
     console.error('Error extracting video ID:', error);
     return null;
@@ -52,13 +65,11 @@ function getVideoIdFromUrl(url) {
 }
 
 // Function to extract transcript from YouTube page
-async function extractTranscript() {
-  console.log("Starting transcript extraction...");
+async function extractTranscript(videoId) {
+  console.log("Starting transcript extraction for video:", videoId);
   
-  // Get the video ID from the URL
-  const videoId = getVideoIdFromUrl(window.location.href);
   if (!videoId) {
-    throw new Error('Could not extract video ID from URL');
+    throw new Error('No video ID provided');
   }
   
   try {
@@ -72,488 +83,106 @@ async function extractTranscript() {
       return transcript;
     }
     
-    // Explicitly try to open the transcript panel with our new direct approach
-    console.log("Direct extraction failed or returned incomplete data, trying to force open transcript panel...");
-    const panelOpened = await forceOpenTranscriptPanel();
-    if (panelOpened) {
-      console.log("Successfully opened transcript panel, waiting for it to load...");
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    } else {
-      console.log("Could not force open transcript panel, trying traditional approach...");
-      await tryOpenTranscriptPanel();
-    }
+    // Explicitly try to open the transcript panel
+    console.log("Direct extraction failed, trying to open transcript panel...");
+    await forceOpenTranscriptPanel();
     
-    // Now try the DOM extraction more aggressively
-    for (let attempt = 0; attempt < 3; attempt++) {
-      console.log(`DOM extraction attempt ${attempt+1}/3...`);
-      
-      // Try the DOM structure extraction
-      transcript = await tryExtractTranscriptFromDOM();
-      
-      // If we got structured data with text fields, return it
-      if (transcript && Array.isArray(transcript) && 
-          transcript.length > 0 && 
-          transcript[0].hasOwnProperty('text')) {
-        console.log(`DOM extraction successful on attempt ${attempt+1}`);
-        return transcript;
-      }
-      
-      // Wait a bit before trying again
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+    // Wait for panel to load
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // If all attempts fail, check if we at least got something from the DOM
-    if (transcript && (typeof transcript === 'string' || 
-        (Array.isArray(transcript) && transcript.length > 0))) {
-      console.log("Got partial transcript data");
+    // Try DOM extraction
+    transcript = await tryExtractTranscriptFromDOM();
+    if (transcript && Array.isArray(transcript) && transcript.length > 0) {
+      console.log("DOM extraction successful");
       return transcript;
     }
     
-    // If DOM extraction fails, fallback to a basic approach
-    console.log("All extraction methods failed, using fallback metadata");
-    transcript = getFallbackTranscript(videoId);
-    return transcript;
+    throw new Error('Could not extract transcript');
     
   } catch (error) {
     console.error("Error during transcript extraction:", error);
-    // Return a basic fallback even in case of errors
-    return getFallbackTranscript(videoId);
+    throw error;
   }
 }
 
 // Attempts to extract transcript directly from YouTube's internal data
 async function attemptDirectExtraction(videoId) {
   try {
-    // METHOD 0: Using YouTube's transcript API directly (most reliable method)
+    // Try YouTube's transcript API first
     console.log("Attempting to extract transcript using YouTube's API endpoint...");
-    try {
-      const transcript = await getTranscriptFromAPI(videoId);
-      if (transcript && transcript.length > 0) {
-        console.log(`Successfully extracted ${Array.isArray(transcript) ? transcript.length : 'full'} transcript from API`);
-        return transcript;
-      }
-    } catch (apiError) {
-      console.error("Error extracting transcript via API:", apiError);
+    const transcript = await getTranscriptFromAPI(videoId);
+    if (transcript && transcript.length > 0) {
+      console.log(`Successfully extracted ${transcript.length} segments from API`);
+      return transcript;
     }
     
-    // Method 1: Extract from player response in script tags
-    console.log("Trying to extract transcript from player response data...");
-    const scriptTags = document.querySelectorAll('script');
-    for (const script of scriptTags) {
-      const content = script.textContent;
-      if (content && content.includes('playerResponse') && content.includes('captionTracks')) {
-        const match = content.match(/playerResponse\s*=\s*(\{.+?\}\}\});/);
-        if (match && match[1]) {
-          try {
-            const data = JSON.parse(match[1]);
-            if (data.captions && data.captions.playerCaptionsTracklistRenderer) {
-              const captionTracks = data.captions.playerCaptionsTracklistRenderer.captionTracks;
-              if (captionTracks && captionTracks.length > 0) {
-                const baseUrl = captionTracks[0].baseUrl;
-                if (baseUrl) {
-                  // Try to fetch the transcript data directly
-                  try {
-                    const transcriptData = await fetchTranscriptFromUrl(baseUrl);
-                    if (transcriptData) {
-                      return transcriptData;
-                    }
-                  } catch (fetchError) {
-                    console.error("Error fetching transcript from URL:", fetchError);
-                  }
-                  
-                  // We can't directly fetch it due to CORS, but this confirms it exists
-                  return `Video has available transcript. Video ID: ${videoId}`;
-                }
-              }
-            }
-          } catch (e) {
-            console.error("Error parsing player data:", e);
-          }
-        }
-      }
-    }
-    
-    // Method 2: Try to extract from the yt-formatted-string elements directly
-    // This can work for auto-generated captions that are already loaded
-    console.log("Trying direct extraction from current DOM...");
-    
-    // Check if auto-captions are visible in the video player
-    const captionsRenderer = document.querySelector('.ytp-caption-segment');
-    if (captionsRenderer) {
-      console.log("Captions are currently showing in the player, will try to extract");
-    }
-    
-    // Try to find captions window
-    const captionsWindow = document.querySelector('.ytp-caption-window-container');
-    if (captionsWindow) {
-      console.log("Found captions window container");
-    }
-    
-    // Try to get auto-generated captions directly from YouTube transcript panel if already open
-    const transcriptPanel = document.querySelector(
-      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"], ' +
-      'ytd-transcript-search-panel-renderer, ' +
-      'ytd-transcript-renderer'
-    );
-    
-    if (transcriptPanel) {
-      console.log("Found transcript panel, trying to extract directly");
-      
-      // YouTube's new UI - look for specific transcript components
-      const transcriptSegments = transcriptPanel.querySelectorAll('ytd-transcript-segment-renderer');
-      if (transcriptSegments.length > 0) {
-        console.log(`Found ${transcriptSegments.length} transcript segments`);
-        
-        const segments = [];
-        transcriptSegments.forEach(segment => {
-          const timestamp = segment.querySelector('div[class*="time"]')?.textContent?.trim();
-          const text = segment.querySelector('yt-formatted-string')?.textContent?.trim();
-          
-          if (timestamp && text) {
-            segments.push({ timestamp, text });
-          }
-        });
-        
-        if (segments.length > 0) {
-          console.log(`Successfully extracted ${segments.length} segments from transcript panel`);
-          return segments;
-        }
-      }
-    }
-    
-    // Method 3: Extract captions from ytInitialPlayerResponse object in window
-    try {
-      console.log("Trying to extract from window.ytInitialPlayerResponse...");
-      // This is a global variable YouTube sets with player information
-      const ytInitialPlayerResponse = window.ytInitialPlayerResponse;
-      
-      if (ytInitialPlayerResponse && ytInitialPlayerResponse.captions) {
-        const captionsRenderer = ytInitialPlayerResponse.captions.playerCaptionsTracklistRenderer;
-        if (captionsRenderer && captionsRenderer.captionTracks && captionsRenderer.captionTracks.length > 0) {
-          const captionTrack = captionsRenderer.captionTracks[0];
-          if (captionTrack.baseUrl) {
-            console.log("Found caption URL in ytInitialPlayerResponse");
-            
-            // Try to fetch the transcript directly
-            try {
-              const transcriptData = await fetchTranscriptFromUrl(captionTrack.baseUrl);
-              if (transcriptData) {
-                return transcriptData;
-              }
-            } catch (fetchError) {
-              console.error("Error fetching transcript from URL:", fetchError);
-            }
-            
-            return `Video has available transcript from ytInitialPlayerResponse. Video ID: ${videoId}`;
-          }
-        }
-      }
-    } catch (e) {
-      console.error("Error accessing ytInitialPlayerResponse:", e);
-    }
-    
-    return null;
+    throw new Error('Direct extraction failed');
   } catch (error) {
-    console.error("Error in direct extraction:", error);
-    return null;
+    console.error("Direct extraction error:", error);
+    throw error;
   }
 }
 
-// Function to get transcript directly from YouTube's API
+// Function to get transcript from YouTube's API
 async function getTranscriptFromAPI(videoId) {
   try {
     console.log(`Fetching transcript for video ${videoId} using API approach...`);
     
-    // Similar to YouTube Transcript API, first get available transcript tracks
-    let captionTracks = [];
-    
-    // Method 1: Extract from ytInitialPlayerResponse (most reliable)
-    if (window.ytInitialPlayerResponse && 
-        window.ytInitialPlayerResponse.captions && 
-        window.ytInitialPlayerResponse.captions.playerCaptionsTracklistRenderer) {
-      
-      captionTracks = window.ytInitialPlayerResponse.captions.playerCaptionsTracklistRenderer.captionTracks;
-      console.log(`Found ${captionTracks?.length || 0} caption tracks in ytInitialPlayerResponse`);
+    // Get caption tracks from ytInitialPlayerResponse
+    const ytInitialData = window.ytInitialPlayerResponse;
+    if (!ytInitialData?.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
+      throw new Error('No caption tracks found in player data');
     }
     
-    // Method 2: Look for captions in the player variable
-    if ((!captionTracks || captionTracks.length === 0) && window.ytplayer && window.ytplayer.config) {
-      try {
-        const playerResponse = window.ytplayer.config.args.player_response;
-        if (typeof playerResponse === 'string') {
-          const data = JSON.parse(playerResponse);
-          if (data.captions && data.captions.playerCaptionsTracklistRenderer) {
-            captionTracks = data.captions.playerCaptionsTracklistRenderer.captionTracks;
-            console.log(`Found ${captionTracks?.length || 0} caption tracks in ytplayer config`);
-          }
-        }
-      } catch (e) {
-        console.error("Error parsing player_response:", e);
-      }
+    const captionTracks = ytInitialData.captions.playerCaptionsTracklistRenderer.captionTracks;
+    console.log(`Found ${captionTracks.length} caption tracks`);
+    
+    // Select English track (auto-generated or manual)
+    let selectedTrack = captionTracks.find(track => 
+      track.languageCode === 'en' && track.kind === 'asr'
+    ) || captionTracks.find(track => 
+      track.languageCode === 'en'
+    ) || captionTracks[0];
+    
+    if (!selectedTrack?.baseUrl) {
+      throw new Error('No valid caption track URL found');
     }
     
-    // Method 3: Use document.scripts to find captions info
-    if (!captionTracks || captionTracks.length === 0) {
-      try {
-        for (const script of document.scripts) {
-          const content = script.textContent;
-          if (content && content.includes('"captionTracks"')) {
-            const match = content.match(/{"captionTracks":(\[.*?\]),"audioTracks"/);
-            if (match && match[1]) {
-              captionTracks = JSON.parse(match[1]);
-              console.log(`Found ${captionTracks?.length || 0} caption tracks in script tags`);
-              break;
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Error parsing script content:", e);
-      }
-    }
+    console.log("Selected track:", selectedTrack.name?.simpleText);
     
-    // If we found caption tracks, try to select the best one
-    if (captionTracks && captionTracks.length > 0) {
-      console.log("Available caption tracks:");
-      captionTracks.forEach((track, index) => {
-        console.log(`${index}: ${track.name?.simpleText || 'unnamed'} (${track.languageCode}) ${track.kind || ''}`);
-      });
-      
-      // SIMILAR TO YOUTUBE TRANSCRIPT API: Prioritize selection
-      let selectedTrack = null;
-      
-      // 1. First look for English auto-generated captions
-      for (const track of captionTracks) {
-        if (track.languageCode === 'en' && track.kind === 'asr') {
-          selectedTrack = track;
-          console.log("Selected English auto-generated captions");
-          break;
-        }
-      }
-      
-      // 2. Then look for any English captions
-      if (!selectedTrack) {
-        for (const track of captionTracks) {
-          if (track.languageCode === 'en') {
-            selectedTrack = track;
-            console.log("Selected English captions");
-            break;
-          }
-        }
-      }
-      
-      // 3. Fall back to first available track
-      if (!selectedTrack && captionTracks.length > 0) {
-        selectedTrack = captionTracks[0];
-        console.log(`Selected default caption track: ${selectedTrack.name?.simpleText || 'unnamed'}`);
-      }
-      
-      if (selectedTrack && selectedTrack.baseUrl) {
-        // IMPORTANT: Create a proper URL with format parameters, similar to what YouTube Transcript API does
-        let url = selectedTrack.baseUrl;
-        
-        // Add format parameters for best results
-        if (!url.includes('&fmt=')) {
-          url += '&fmt=json3'; // This format is often more reliable for processing
-        }
-        
-        console.log("Fetching captions from URL:", url);
-        
-        try {
-          // Use XMLHttpRequest to fetch captions (better for content scripts)
-          return await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', url, true);
-            xhr.onload = function() {
-              if (xhr.status >= 200 && xhr.status < 400) {
-                console.log("Received caption data, length:", xhr.responseText.length);
-                
-                try {
-                  // Try parsing as JSON first (json3 format)
-                  try {
-                    const jsonData = JSON.parse(xhr.responseText);
-                    if (jsonData.events) {
-                      console.log("Successfully parsed JSON caption data with", jsonData.events.length, "events");
-                      
-                      // Convert to our standardized format
-                      const segments = [];
-                      for (const event of jsonData.events) {
-                        if (event.segs && event.tStartMs !== undefined) {
-                          const text = event.segs.map(seg => seg.utf8).join('').trim();
-                          if (text) {
-                            const startTime = event.tStartMs / 1000; // Convert to seconds
-                            segments.push({
-                              text: text,
-                              start: startTime,
-                              duration: (event.dDurationMs || 0) / 1000,
-                              timestamp: formatTimestamp(startTime)
-                            });
-                          }
-                        }
-                      }
-                      
-                      if (segments.length > 0) {
-                        console.log(`Successfully extracted ${segments.length} segments from JSON`);
-                        resolve(segments);
-                        return;
-                      }
-                    }
-                  } catch (jsonError) {
-                    console.log("Couldn't parse as JSON, trying XML");
-                  }
-                  
-                  // Fall back to XML parsing if JSON fails
-                  const parser = new DOMParser();
-                  const xmlDoc = parser.parseFromString(xhr.responseText, "text/xml");
-                  
-                  // Extract text elements
-                  const textElements = xmlDoc.getElementsByTagName('text');
-                  if (textElements.length === 0) {
-                    console.log("No text elements found in transcript XML");
-                    
-                    // Even if we can't parse it properly, return the raw text if it's substantial
-                    if (xhr.responseText && xhr.responseText.length > 100) {
-                      console.log("Returning raw caption response as it has substantial content");
-                      resolve(xhr.responseText);
-                    } else {
-                      reject(new Error("No text elements found in transcript XML"));
-                    }
-                    return;
-                  }
-                  
-                  console.log(`Found ${textElements.length} transcript segments in XML`);
-                  
-                  // Convert to our segment format
-                  const segments = [];
-                  for (let i = 0; i < textElements.length; i++) {
-                    const element = textElements[i];
-                    const start = parseFloat(element.getAttribute('start') || '0');
-                    const dur = parseFloat(element.getAttribute('dur') || '0');
-                    
-                    // Get the text content, handling HTML entities
-                    let content = element.textContent || element.innerHTML;
-                    
-                    // Create a temporary element to handle the HTML content
-                    const temp = document.createElement('div');
-                    temp.innerHTML = content;
-                    content = temp.textContent;
-                    
-                    if (content) {
-                      segments.push({
-                        text: content.trim(),
-                        start: start,
-                        duration: dur,
-                        timestamp: formatTimestamp(start)
-                      });
-                    }
-                  }
-                  
-                  console.log(`Successfully parsed ${segments.length} segments from XML`);
-                  resolve(segments);
-                  
-                } catch (parseError) {
-                  console.error("Error parsing caption data:", parseError);
-                  
-                  // If parsing fails but we have content, return the raw content
-                  if (xhr.responseText && xhr.responseText.length > 100) {
-                    console.log("Returning raw caption response despite parsing error");
-                    resolve(xhr.responseText);
-                  } else {
-                    reject(parseError);
-                  }
-                }
-              } else {
-                console.error(`Caption request failed with status ${xhr.status}`);
-                reject(new Error(`XHR failed with status ${xhr.status}`));
-              }
-            };
-            xhr.onerror = function() {
-              console.error("XHR request failed");
-              reject(new Error('XHR request failed'));
-            };
-            xhr.send();
-          });
-          
-        } catch (xhrError) {
-          console.error("XHR error:", xhrError);
-          throw xhrError;
-        }
-      } else {
-        console.log("No baseUrl found for the selected caption track");
-      }
-    } else {
-      console.log("No caption tracks found");
-    }
-    
-    return null;
-  } catch (error) {
-    console.error("Error in getTranscriptFromAPI:", error);
-    throw error;
-  }
-}
-
-// Function to fetch and parse transcript from a YouTube transcript URL
-async function fetchTranscriptFromUrl(url) {
-  try {
-    console.log("Fetching transcript from URL:", url);
-    
+    // Fetch captions
+    const url = `${selectedTrack.baseUrl}&fmt=json3`;
     const response = await fetch(url);
     if (!response.ok) {
-      throw new Error(`Failed to fetch transcript: ${response.status}`);
+      throw new Error(`Failed to fetch captions: ${response.status}`);
     }
     
-    const text = await response.text();
-    console.log("Transcript response length:", text.length);
-    
-    // Parse the XML response
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(text, "text/xml");
-    
-    // Extract text elements
-    const textElements = xmlDoc.getElementsByTagName('text');
-    if (textElements.length === 0) {
-      throw new Error("No text elements found in transcript XML");
+    const data = await response.json();
+    if (!data.events) {
+      throw new Error('Invalid caption data format');
     }
     
-    console.log(`Found ${textElements.length} transcript segments in XML`);
+    // Convert to our format
+    const segments = data.events
+      .filter(event => event.segs && event.tStartMs !== undefined)
+      .map(event => ({
+        text: event.segs.map(seg => seg.utf8).join('').trim(),
+        start: event.tStartMs / 1000,
+        duration: (event.dDurationMs || 0) / 1000,
+        timestamp: formatTimestamp(event.tStartMs / 1000)
+      }))
+      .filter(segment => segment.text);
     
-    // Convert to our segment format - following YouTube Transcript API format
-    const segments = [];
-    for (let i = 0; i < textElements.length; i++) {
-      const element = textElements[i];
-      const start = parseFloat(element.getAttribute('start') || '0');
-      const dur = parseFloat(element.getAttribute('dur') || '0');
-      
-      // Get the text content, handling HTML entities
-      let content = element.textContent;
-      
-      // If the element has XML content, get the innerHTML instead
-      if (element.innerHTML && element.innerHTML.trim() !== content.trim()) {
-        // Create a temporary element to handle the HTML content
-        const temp = document.createElement('div');
-        temp.innerHTML = element.innerHTML;
-        content = temp.textContent;
-      }
-      
-      if (content) {
-        segments.push({
-          text: content.trim(),
-          start: start,  // Original start time in seconds
-          duration: dur,
-          timestamp: formatTimestamp(start)  // Formatted timestamp for display
-        });
-      }
-    }
-    
-    console.log(`Successfully parsed ${segments.length} segments from XML with precise timestamps`);
+    console.log(`Processed ${segments.length} transcript segments`);
     return segments;
     
   } catch (error) {
-    console.error("Error in fetchTranscriptFromUrl:", error);
+    console.error("API extraction error:", error);
     throw error;
   }
 }
 
-// Helper function to format seconds to MM:SS or HH:MM:SS
+// Helper function to format seconds to timestamp
 function formatTimestamp(seconds) {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -561,849 +190,99 @@ function formatTimestamp(seconds) {
   
   if (hours > 0) {
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  } else {
-    return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
+  return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-// Attempts to open the transcript panel
-async function tryOpenTranscriptPanel() {
+// Function to force open transcript panel
+async function forceOpenTranscriptPanel() {
   try {
-    // Try multiple approaches to open the transcript
-    
-    // 2024 YouTube UI: First try the modern "..." menu
-    console.log("Trying to access transcript through modern YouTube menu...");
-    const modernMenuButtons = document.querySelectorAll('button[aria-label="More actions"], ytd-menu-renderer button, yt-icon-button[id="button"]');
-    
-    for (const button of modernMenuButtons) {
-      if (button && button.offsetParent !== null) { // Check if button is visible
-        console.log("Found and clicking modern menu button");
-        button.click();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // After clicking the menu, look for the transcript option
-        const menuItems = document.querySelectorAll('tp-yt-paper-item, ytd-menu-service-item-renderer, [role="menuitem"]');
-        for (const item of menuItems) {
-          const text = item.textContent.toLowerCase().trim();
-          if (text.includes('transcript') || text.includes('caption') || text.includes('subtitles')) {
-            console.log("Found transcript option in menu:", text);
-            item.click();
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            // Check if transcript panel appeared
-            const panel = document.querySelector('#panels [target-id="engagement-panel-searchable-transcript"]');
-            if (panel) {
-              console.log("Successfully opened transcript panel via menu");
-              return;
-            }
-          }
-        }
-        
-        // Close the menu if we didn't find the transcript option
-        document.body.click();
-        break;
-      }
+    // Click the "..." menu button if it exists
+    const menuButton = document.querySelector('button[aria-label="More actions"]');
+    if (menuButton) {
+      menuButton.click();
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     
-    // Approach 1: Try the "..." button in video description area
-    console.log("Trying to find and click More actions button in description...");
-    const moreActionsButtons = [
-      ...document.querySelectorAll('button[aria-label="More actions"]'),
-      ...document.querySelectorAll('button[aria-label="Show more"], button[aria-label="More"]'),
-      ...document.querySelectorAll('button.ytp-subtitles-button'),
-      ...document.querySelectorAll('button[data-tooltip-target-id="ytp-subtitles-button"]')
-    ];
+    // Look for and click the "Show transcript" button
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const transcriptButton = buttons.find(button => 
+      button.textContent.toLowerCase().includes('transcript')
+    );
     
-    for (const button of moreActionsButtons) {
-      if (button && button.offsetParent !== null) { // Check if button is visible
-        console.log("Found and clicking More actions button");
-        button.click();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        break;
-      }
-    }
-    
-    // Approach 2: Try to find and click the transcript button in various menus
-    console.log("Looking for transcript button...");
-    const transcriptButton = findTranscriptButton();
     if (transcriptButton) {
-      console.log("Found transcript button, clicking it...");
       transcriptButton.click();
-      // Wait for transcript panel to load
-      await new Promise(resolve => setTimeout(resolve, 1500));
-    } else {
-      console.log("Could not find transcript button");
-      
-      // Approach 3: Try the CC button in video player
-      const ccButtons = [
-        document.querySelector('.ytp-subtitles-button'),
-        document.querySelector('button[data-title-no-tooltip="Subtitles/closed captions"]'),
-        document.querySelector('button[aria-label*="subtitles"]'),
-        document.querySelector('button[aria-label*="caption"]')
-      ];
-      
-      for (const button of ccButtons) {
-        if (button && button.offsetParent !== null) {
-          console.log("Found CC button, clicking it...");
-          button.click();
-          await new Promise(resolve => setTimeout(resolve, 800));
-          
-          // Now try to find a "Show transcript" option that might appear
-          const showTranscriptOption = document.querySelector('[aria-label*="transcript"], [aria-label*="Transcript"]');
-          if (showTranscriptOption) {
-            console.log("Found Show transcript option after clicking CC");
-            showTranscriptOption.click();
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-          
-          break;
-        }
-      }
+      return true;
     }
     
-    // Approach 4: Look for the "Open transcript" button directly
-    console.log("Looking for direct Open transcript button...");
-    const openTranscriptButtons = document.querySelectorAll('button, tp-yt-paper-button, yt-button-renderer');
-    for (const button of openTranscriptButtons) {
-      const text = button.textContent.toLowerCase().trim();
-      if (text.includes('transcript') || text.includes('open transcript')) {
-        console.log("Found direct Open transcript button:", text);
-        button.click();
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        break;
-      }
-    }
-    
-    // Check if we successfully opened the transcript panel
-    const panel = document.querySelector('#panels [target-id="engagement-panel-searchable-transcript"]');
-    if (panel) {
-      console.log("Transcript panel is open");
-    } else {
-      console.log("Could not confirm if transcript panel opened");
-    }
-    
+    return false;
   } catch (error) {
     console.error("Error opening transcript panel:", error);
-    // Continue execution even if we can't open the panel
+    return false;
   }
 }
 
-// Tries to extract transcript from different possible DOM structures
+// Function to extract transcript from DOM
 async function tryExtractTranscriptFromDOM() {
-  console.log("Trying to extract transcript from DOM...");
-  
-  // Start with checking if the transcript panel is in the sidebar
-  const transcriptPanel = document.querySelector('[target-id="engagement-panel-searchable-transcript"]');
-  if (transcriptPanel) {
-    console.log("Found transcript panel in sidebar");
-    
-    // Try to get the inner content
-    const transcriptContent = getTranscriptContentFromPanel(transcriptPanel);
-    if (transcriptContent) {
-      return transcriptContent;
-    }
-  }
-  
-  // If not found in sidebar, try multiple selectors for transcript containers
-  const containerSelectors = [
-    '#transcript-scrollbox',
-    'ytd-transcript-search-panel-renderer',
-    'ytd-transcript-renderer',
-    'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]',
-    '.ytd-engagement-panel-section-list-renderer',
-    '#panels', // Broader container that might contain the transcript
-    'ytd-engagement-panel-container',
-    '[target-id="engagement-panel-searchable-transcript"]', // More generic selector
-    'ytd-engagement-panel-section-list-renderer' // Even more generic
-  ];
-  
-  let transcriptContainer = null;
-  for (const selector of containerSelectors) {
-    const container = document.querySelector(selector);
-    if (container) {
-      console.log(`Found transcript container with selector: ${selector}`);
-      transcriptContainer = container;
-      
-      // Try to get transcript content from this container
-      const transcriptContent = getTranscriptContentFromPanel(container);
-      if (transcriptContent) {
-        return transcriptContent;
-      }
-      
-      break;
-    }
-  }
-  
-  if (!transcriptContainer) {
-    console.log("Could not find transcript container");
-    return null;
-  }
-  
-  // FIRST ATTEMPT: Try to get the transcript using modern YouTube selectors (2023-2024)
-  console.log("Trying modern YouTube transcript selectors...");
-  
-  // These are likely to work with auto-generated captions
-  const modernSelectors = {
-    segmentContainers: [
-      '#segments-container', 
-      'ytd-transcript-segment-list-renderer',
-      'ytd-transcript-body-renderer'
-    ],
-    segmentItems: [
-      'ytd-transcript-segment-renderer', 
-      'yt-formatted-string.segment-text',
-      'div.segment'
-    ]
-  };
-  
-  // Try each container selector
-  for (const containerSelector of modernSelectors.segmentContainers) {
-    console.log(`Checking for segment container: ${containerSelector}`);
-    const segmentContainer = transcriptContainer.querySelector(containerSelector) || 
-                            document.querySelector(containerSelector);
-    
-    if (segmentContainer) {
-      console.log(`Found segment container: ${containerSelector}`);
-      
-      // Now try to find all segments inside this container
-      for (const itemSelector of modernSelectors.segmentItems) {
-        console.log(`Looking for segments with: ${itemSelector}`);
-        const segments = segmentContainer.querySelectorAll(itemSelector);
-        
-        if (segments && segments.length > 0) {
-          console.log(`Found ${segments.length} segments with selector: ${itemSelector}`);
-          
-          // Try to parse these segments
-          const transcript = parseSegments(segments);
-          if (transcript && transcript.length > 0) {
-            console.log(`Successfully parsed ${transcript.length} segments`);
-            return transcript;
-          }
-        }
-      }
-    }
-  }
-  
-  // SECOND ATTEMPT: Try the YouTube 2024 specific selectors (they keep changing!)
-  // This should work with the latest YouTube UI
-  console.log("Trying latest YouTube UI selectors...");
-  
-  // Find any elements that might contain transcript segments
-  const listRenderer = transcriptContainer.querySelector('ytd-transcript-segment-list-renderer') || 
-                      document.querySelector('ytd-transcript-segment-list-renderer');
-  
-  if (listRenderer) {
-    console.log("Found transcript segment list renderer");
-    
-    // Try to get all children that might be transcript segments
-    const segmentRenderers = listRenderer.querySelectorAll('ytd-transcript-segment-renderer');
-    if (segmentRenderers.length > 0) {
-      console.log(`Found ${segmentRenderers.length} segment renderers`);
-      
-      const transcript = [];
-      
-      segmentRenderers.forEach(renderer => {
-        // For YouTube 2024, the structure is typically:
-        // - A div with class containing "timestamp"
-        // - A yt-formatted-string with the text content
-        const timestampEl = renderer.querySelector('div[class*="time"]') || 
-                           renderer.querySelector('[class*="timestamp"]');
-        
-        const textEl = renderer.querySelector('yt-formatted-string') || 
-                      renderer.querySelector('span[class*="text"]') || 
-                      renderer.querySelector('div[class*="text"]');
-        
-        if (timestampEl && textEl) {
-          const timestamp = timestampEl.textContent.trim();
-          const text = textEl.textContent.trim();
-          
-          if (timestamp && text) {
-            transcript.push({ timestamp, text });
-          }
-        }
-      });
-      
-      if (transcript.length > 0) {
-        console.log(`Successfully extracted ${transcript.length} segments from latest UI`);
-        return transcript;
-      }
-    }
-  }
-  
-  // THIRD ATTEMPT: Try pattern matching on all text nodes
-  console.log("Trying direct pattern matching on text nodes...");
-  
-  const textNodes = [];
-  const timePattern = /^(\d+:)?(\d+):(\d+)$/;
-  
-  // Helper function to collect all text nodes in a container
-  function collectTextNodes(node) {
-    if (node.nodeType === 3) { // Text node
-      const text = node.textContent.trim();
-      if (text.length > 0) {
-        textNodes.push({ node, text });
-      }
-    } else if (node.nodeType === 1) { // Element node
-      for (let i = 0; i < node.childNodes.length; i++) {
-        collectTextNodes(node.childNodes[i]);
-      }
-    }
-  }
-  
-  collectTextNodes(transcriptContainer);
-  console.log(`Found ${textNodes.length} text nodes`);
-  
-  // Find timestamp nodes
-  const timestampNodes = textNodes.filter(item => timePattern.test(item.text));
-  console.log(`Found ${timestampNodes.length} timestamp-like nodes`);
-  
-  if (timestampNodes.length > 0) {
-    const transcript = [];
-    
-    for (let i = 0; i < timestampNodes.length; i++) {
-      const timestamp = timestampNodes[i].text;
-      
-      // Find the nearest text node after this timestamp
-      let textNodeIndex = textNodes.findIndex(item => item.node === timestampNodes[i].node) + 1;
-      
-      // Skip other timestamp nodes
-      while (textNodeIndex < textNodes.length && timePattern.test(textNodes[textNodeIndex].text)) {
-        textNodeIndex++;
-      }
-      
-      if (textNodeIndex < textNodes.length) {
-        const text = textNodes[textNodeIndex].text;
-        if (text && text.length > 1 && !timePattern.test(text)) {
-          transcript.push({ timestamp, text });
-        }
-      }
-    }
-    
-    if (transcript.length > 0) {
-      console.log(`Successfully extracted ${transcript.length} segments from text nodes`);
-      return transcript;
-    }
-  }
-  
-  // LAST RESORT: If all structured extraction fails, get plain text
-  console.log("All structured extraction methods failed, trying plain text extraction...");
-  
-  // Custom extraction for YouTube's specific layout as a last resort
-  return attemptCustomDOMExtraction(transcriptContainer);
-}
-
-// Helper function to process a transcript panel and get content with precise timestamps
-function getTranscriptContentFromPanel(panel) {
-  // Check if panel has the right structure for 2024 YouTube
-  const segmentRenderers = panel.querySelectorAll('ytd-transcript-segment-renderer');
-  if (segmentRenderers.length > 0) {
-    console.log(`Panel contains ${segmentRenderers.length} transcript segments`);
-    
-    const segments = [];
-    segmentRenderers.forEach(renderer => {
-      try {
-        // Try different possible element combinations for timestamp and text
-        const timestampEl = renderer.querySelector('[class*="timestamp"]') || 
-                          renderer.querySelector('[class*="time"]') ||
-                          Array.from(renderer.querySelectorAll('span, div')).find(el => {
-                            const text = el.textContent.trim();
-                            return /^\d+:\d+$/.test(text) || /^\d+:\d+:\d+$/.test(text);
-                          });
-        
-        const textEl = renderer.querySelector('yt-formatted-string') || 
-                      renderer.querySelector('[class*="content"]') ||
-                      renderer.querySelector('[class*="text"]');
-        
-        if (timestampEl && textEl) {
-          const timestampStr = timestampEl.textContent.trim();
-          const text = textEl.textContent.trim();
-          
-          if (timestampStr && text) {
-            // Convert timestamp to seconds for accurate sorting and alignment
-            const startSeconds = getTimestampSecondsFromString(timestampStr);
-            
-            segments.push({
-              text: text,
-              start: startSeconds,  // Store original seconds for comparison and sorting
-              timestamp: timestampStr // Keep display format
-            });
-          }
-        }
-      } catch (error) {
-        console.error("Error processing segment:", error);
-      }
-    });
-    
-    if (segments.length > 0) {
-      // Sort by timestamp to ensure correct order
-      segments.sort((a, b) => a.start - b.start);
-      console.log(`Successfully extracted ${segments.length} segments from panel with precise timestamps`);
-      return segments;
-    }
-  }
-  
-  return null;
-}
-
-// Custom extraction when other methods fail
-function attemptCustomDOMExtraction(container) {
-  // The timestamp pattern we're looking for (MM:SS or HH:MM:SS)
-  const timeRegex = /^\s*(\d+:)?(\d+):(\d+)\s*$/;
-  
-  // Look for specific elements that might contain formatted transcript text
-  const allElements = container.querySelectorAll('*');
-  let timestampElements = [];
-  let textElements = [];
-  
-  // First pass: identify potential timestamp elements
-  for (const el of allElements) {
-    const text = el.textContent.trim();
-    if (text.length > 0) {
-      if (timeRegex.test(text)) {
-        timestampElements.push(el);
-      } else if (text.length > 5 && !text.includes('transcript')) {
-        textElements.push(el);
-      }
-    }
-  }
-  
-  console.log(`Found ${timestampElements.length} potential timestamp elements and ${textElements.length} text elements`);
-  
-  // If we have a good number of timestamps, try to pair them with text
-  if (timestampElements.length > 3) {
-    // Assume timestamps and texts alternate or are in pairs
-    const segments = [];
-    
-    if (timestampElements.length === textElements.length) {
-      // Perfect match - pair them directly
-      for (let i = 0; i < timestampElements.length; i++) {
-        const timestampStr = timestampElements[i].textContent.trim();
-        const text = textElements[i].textContent.trim();
-        const startSeconds = getTimestampSecondsFromString(timestampStr);
-        
-        segments.push({
-          text: text,
-          start: startSeconds, // Store seconds for comparison
-          timestamp: timestampStr
-        });
-      }
-      
-      console.log(`Successfully paired ${segments.length} segments with precise timestamps`);
-      return segments;
-    }
-    
-    // If not a perfect match, try to intelligently pair them
-    let textIndex = 0;
-    for (let i = 0; i < timestampElements.length && textIndex < textElements.length; i++) {
-      // Try to find a text element that's somehow related to this timestamp
-      const timestampStr = timestampElements[i].textContent.trim();
-      const startSeconds = getTimestampSecondsFromString(timestampStr);
-      
-      // Check if there's a text element right after the timestamp in the DOM
-      let found = false;
-      let node = timestampElements[i].nextSibling;
-      
-      while (node && !found) {
-        if (node.nodeType === 1) { // Element
-          const text = node.textContent.trim();
-          if (text.length > 5 && !timeRegex.test(text)) {
-            segments.push({
-              text: text,
-              start: startSeconds,
-              timestamp: timestampStr
-            });
-            found = true;
-            break;
-          }
-        }
-        node = node.nextSibling;
-      }
-      
-      if (!found) {
-        // If we couldn't find a related element, use the next text element
-        segments.push({
-          text: textElements[textIndex].textContent.trim(),
-          start: startSeconds,
-          timestamp: timestampStr
-        });
-        textIndex++;
-      }
-    }
-    
-    if (segments.length > 0) {
-      // Sort by timestamp to ensure correct order
-      segments.sort((a, b) => a.start - b.start);
-      console.log(`Constructed ${segments.length} segments using element pairing with precise timestamps`);
-      return segments;
-    }
-  }
-  
-  // If we get here, we've failed to extract structured segments
-  // Try to create a useful description that at least captures the video content
-  let plainText = '';
-  
-  // If we can't pair them, use any substantial text we found
-  for (const el of allElements) {
-    const text = el.textContent.trim();
-    if (text.length > 5 && !timeRegex.test(text) && !text.includes('transcript')) {
-      plainText += text + '\n';
-    }
-  }
-  
-  if (plainText.length > 100) { // Only use if we got something substantial
-    console.log(`Extracted detailed plain text, length: ${plainText.length}`);
-    return plainText;
-  }
-  
-  // Final fallback: just get all text from the container
-  plainText = container.textContent.trim();
-  if (plainText.length > 20) {
-    console.log(`Extracted plain text from container, length: ${plainText.length}`);
-    return plainText;
-  }
-  
-  console.log("Could not extract any useful transcript text");
-  return null;
-}
-
-// Helper function to parse transcript segments
-function parseSegments(segments) {
-  const transcript = [];
-  
-  segments.forEach(segment => {
-    try {
-      // Try different possible selector combinations
-      const timestampElement = 
-        segment.querySelector('.segment-timestamp') || 
-        segment.querySelector('div[class*="timestamp"]') ||
-        segment.querySelector('span[class*="timestamp"]') ||
-        segment.querySelector('.ytd-transcript-segment-renderer') ||
-        findTimestampElement(segment);
-          
-      const textElement = 
-        segment.querySelector('.segment-text') || 
-        segment.querySelector('div[class*="content"]') ||
-        segment.querySelector('span[class*="content"]') ||
-        segment.querySelector('yt-formatted-string') ||
-        findTextElement(segment) ||
-        segment;
-      
-      if (timestampElement && textElement) {
-        const timestamp = timestampElement.textContent.trim();
-        const text = textElement.textContent.trim().replace(timestamp, '').trim();
-        
-        if (timestamp && text) {
-          transcript.push({
-            timestamp: timestamp,
-            text: text
-          });
-        }
-      } else if (textElement) {
-        // If we can't find a timestamp but have text, this might be a combined element
-        const content = textElement.textContent.trim();
-        const timeMatch = content.match(/^(\d+:)?(\d+):(\d+)(.+)/);
-        
-        if (timeMatch) {
-          transcript.push({
-            timestamp: timeMatch[1] ? timeMatch[1] + timeMatch[2] + ':' + timeMatch[3] : timeMatch[2] + ':' + timeMatch[3],
-            text: timeMatch[4].trim()
-          });
-        }
-      }
-    } catch (err) {
-      console.error("Error processing segment:", err);
-    }
-  });
-  
-  return transcript;
-}
-
-// Helper function to find timestamp element based on content pattern
-function findTimestampElement(parentElement) {
-  const allChildren = parentElement.querySelectorAll('*');
-  for (const child of allChildren) {
-    if (child.childNodes.length === 1 && child.childNodes[0].nodeType === 3) { // Text node
-      const text = child.textContent.trim();
-      // Check if it matches a timestamp pattern (MM:SS or HH:MM:SS)
-      if (/^(\d+:)?(\d+):(\d+)$/.test(text)) {
-        return child;
-      }
-    }
-  }
-  return null;
-}
-
-// Helper function to find text element that's likely to contain caption text
-function findTextElement(parentElement) {
-  const allChildren = parentElement.querySelectorAll('*');
-  for (const child of allChildren) {
-    if (child.childNodes.length === 1 && child.childNodes[0].nodeType === 3) { // Text node
-      const text = child.textContent.trim();
-      // Skip timestamps and look for longer text
-      if (text.length > 5 && !/^(\d+:)?(\d+):(\d+)$/.test(text)) {
-        return child;
-      }
-    }
-  }
-  return null;
-}
-
-// Function to find and return the transcript button
-function findTranscriptButton() {
-  console.log("Looking for transcript button...");
-  
-  // Look for buttons or menu items with transcript-related text
-  const possibleElements = [
-    ...document.querySelectorAll('tp-yt-paper-item'),
-    ...document.querySelectorAll('ytd-menu-service-item-renderer'),
-    ...document.querySelectorAll('button'),
-    ...document.querySelectorAll('[role="menuitem"]')
-  ];
-  
-  const transcriptKeywords = ['transcript', 'subtitles', 'cc', 'captions', 'текст видео', 'транскрипт'];
-  
-  for (const item of possibleElements) {
-    const text = item.textContent.trim().toLowerCase();
-    if (transcriptKeywords.some(keyword => text.includes(keyword))) {
-      console.log("Found transcript button with text:", text);
-      return item;
-    }
-  }
-  
-  // Look for items with specific aria labels
-  const ariaLabelElements = document.querySelectorAll('[aria-label]');
-  for (const item of ariaLabelElements) {
-    const label = item.getAttribute('aria-label').toLowerCase();
-    if (transcriptKeywords.some(keyword => label.includes(keyword))) {
-      console.log("Found transcript button with aria-label:", label);
-      return item;
-    }
-  }
-  
-  console.log("Could not find transcript button");
-  return null;
-}
-
-// Fallback to get a basic transcript when DOM extraction fails
-function getFallbackTranscript(videoId) {
-  console.log("Using fallback transcript for video ID:", videoId);
-  
-  // Get video title as a backup
-  let title = '';
-  const titleElements = [
-    document.querySelector('h1.title'),
-    document.querySelector('h1.ytd-video-primary-info-renderer'),
-    document.querySelector('#title h1'),
-    document.querySelector('#title')
-  ];
-  
-  for (const element of titleElements) {
-    if (element) {
-      title = element.textContent.trim();
-      if (title) break;
-    }
-  }
-  
-  if (!title) {
-    title = 'YouTube Video';
-  }
-                
-  // Get video duration
-  let duration = '';
-  const durationElements = [
-    document.querySelector('.ytp-time-duration'),
-    document.querySelector('.ytd-video-primary-info-renderer .duration')
-  ];
-  
-  for (const element of durationElements) {
-    if (element) {
-      duration = element.textContent.trim();
-      if (duration) break;
-    }
-  }
-  
-  if (!duration) {
-    duration = '10:00';
-  }
-  
-  // Try to extract some text from the description
-  let description = '';
-  const descriptionElements = [
-    document.querySelector('#description-text'),
-    document.querySelector('#description'),
-    document.querySelector('.ytd-video-secondary-info-renderer'),
-    document.querySelector('[itemprop="description"]')
-  ];
-  
-  for (const element of descriptionElements) {
-    if (element) {
-      description = element.textContent.trim().substring(0, 2000);
-      if (description) break;
-    }
-  }
-  
-  if (!description) {
-    description = 'No description available';
-  }
-  
-  // Get channel name if possible
-  let channelName = '';
-  const channelElements = [
-    document.querySelector('#channel-name'),
-    document.querySelector('.ytd-channel-name'),
-    document.querySelector('[itemprop="author"]')
-  ];
-  
-  for (const element of channelElements) {
-    if (element) {
-      channelName = element.textContent.trim();
-      if (channelName) break;
-    }
-  }
-  
-  // Get video views if possible
-  let viewCount = '';
-  const viewElements = [
-    document.querySelector('.view-count'),
-    document.querySelector('.ytd-video-view-count-renderer')
-  ];
-  
-  for (const element of viewElements) {
-    if (element) {
-      viewCount = element.textContent.trim();
-      if (viewCount) break;
-    }
-  }
-  
-  // Create a composite text that might help the AI understand the video content
-  let fallbackText = `Video Title: ${title}\n`;
-  fallbackText += `Video ID: ${videoId}\n`;
-  if (duration) fallbackText += `Duration: ${duration}\n`;
-  if (channelName) fallbackText += `Channel: ${channelName}\n`;
-  if (viewCount) fallbackText += `Views: ${viewCount}\n`;
-  if (description) fallbackText += `Description: ${description}\n`;
-  
-  return fallbackText;
-}
-
-// Function to extract timestamps from YouTube transcript panel
-function getTimestampSecondsFromString(timestampStr) {
   try {
-    // Handle timestamps like "1:23" (mm:ss) or "1:23:45" (hh:mm:ss)
-    const parts = timestampStr.trim().split(':');
-    let hours = 0, minutes = 0, seconds = 0;
+    // Wait for transcript panel
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    if (parts.length === 3) {
-      // Format: hh:mm:ss
-      hours = parseInt(parts[0]);
-      minutes = parseInt(parts[1]);
-      seconds = parseInt(parts[2]);
-    } else if (parts.length === 2) {
-      // Format: mm:ss
-      minutes = parseInt(parts[0]);
-      seconds = parseInt(parts[1]);
-    } else if (parts.length === 1 && !isNaN(parts[0])) {
-      // Format: ss
-      seconds = parseInt(parts[0]);
-    } else {
-      console.error("Invalid timestamp format:", timestampStr);
-      return 0;
+    // Find transcript container
+    const container = document.querySelector(
+      'ytd-transcript-renderer, ' +
+      'ytd-transcript-search-panel-renderer'
+    );
+    
+    if (!container) {
+      throw new Error('Transcript container not found');
     }
     
-    // Convert to seconds
-    return hours * 3600 + minutes * 60 + seconds;
-  } catch (e) {
-    console.error("Error parsing timestamp:", timestampStr, e);
-    return 0;
+    // Get all transcript segments
+    const segments = Array.from(container.querySelectorAll('ytd-transcript-segment-renderer'))
+      .map(segment => {
+        const timestampEl = segment.querySelector('div[class*="time"]');
+        const textEl = segment.querySelector('yt-formatted-string');
+        
+        if (!timestampEl || !textEl) return null;
+        
+        const timestamp = timestampEl.textContent.trim();
+        const text = textEl.textContent.trim();
+        const seconds = getTimestampSeconds(timestamp);
+        
+        return {
+          timestamp,
+          text,
+          start: seconds,
+          duration: 0
+        };
+      })
+      .filter(Boolean);
+    
+    if (segments.length === 0) {
+      throw new Error('No transcript segments found');
+    }
+    
+    // Calculate durations
+    for (let i = 0; i < segments.length - 1; i++) {
+      segments[i].duration = segments[i + 1].start - segments[i].start;
+    }
+    // Set last segment duration to 5 seconds if unknown
+    segments[segments.length - 1].duration = 5;
+    
+    return segments;
+    
+  } catch (error) {
+    console.error("DOM extraction error:", error);
+    throw error;
   }
 }
 
-// Add this function to directly find and click the CC button and open the transcript panel
-async function forceOpenTranscriptPanel() {
-  console.log("Attempting to force open transcript panel...");
-  
-  // First, try to find the CC button in the video player
-  const ccButton = document.querySelector('.ytp-subtitles-button');
-  
-  // If we found the CC button, click it to ensure captions are enabled
-  if (ccButton) {
-    console.log("Found CC button, clicking to enable captions");
-    ccButton.click();
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  } else {
-    console.log("Could not find CC button");
+// Helper function to convert timestamp to seconds
+function getTimestampSeconds(timestamp) {
+  const parts = timestamp.split(':').map(Number);
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
   }
-  
-  // Now look for the three dots menu button
-  const menuButtons = document.querySelectorAll('button.ytp-button:not([aria-disabled="true"])');
-  let menuButton = null;
-  
-  for (const button of menuButtons) {
-    if (button.getAttribute('aria-label') && 
-        (button.getAttribute('aria-label').includes('More') || 
-         button.getAttribute('aria-label').includes('menu'))) {
-      menuButton = button;
-      break;
-    }
-  }
-  
-  if (!menuButton) {
-    const allButtons = document.querySelectorAll('button.ytp-button');
-    // Try the 5th button which is often the "More" button
-    if (allButtons.length >= 5) {
-      menuButton = allButtons[4]; // 0-indexed, so the 5th button is at index 4
-    }
-  }
-  
-  if (menuButton) {
-    console.log("Found video player menu button, clicking it");
-    menuButton.click();
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Now look for the "Open transcript" option in the menu
-    const menuItems = document.querySelectorAll('.ytp-menuitem');
-    let transcriptMenuItem = null;
-    
-    for (const item of menuItems) {
-      const label = item.textContent.toLowerCase();
-      if (label.includes('transcript') || label.includes('caption') || label.includes('subtitle')) {
-        transcriptMenuItem = item;
-        break;
-      }
-    }
-    
-    if (transcriptMenuItem) {
-      console.log("Found transcript menu item, clicking it");
-      transcriptMenuItem.click();
-      // Wait for transcript panel to load
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      return true;
-    } else {
-      console.log("Could not find transcript option in menu");
-    }
-  } else {
-    console.log("Could not find menu button");
-  }
-  
-  // Try clicking the "..." button in the description area (new YouTube UI)
-  const moreActionsButton = document.querySelector('button[aria-label="More actions"]');
-  if (moreActionsButton) {
-    console.log("Found 'More actions' button in description, clicking it");
-    moreActionsButton.click();
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Look for transcript option
-    const menuItems = document.querySelectorAll('ytd-menu-service-item-renderer');
-    for (const item of menuItems) {
-      const text = item.textContent.toLowerCase();
-      if (text.includes('transcript') || text.includes('caption')) {
-        console.log("Found transcript option, clicking it");
-        item.click();
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return true;
-      }
-    }
-  }
-  
-  return false;
+  return parts[0] * 60 + parts[1];
 } 
