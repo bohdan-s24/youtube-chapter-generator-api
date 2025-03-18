@@ -36,6 +36,7 @@ module.exports = async (req, res) => {
     
     let transcriptText;
     let totalDuration = 0;
+    let keySegments = [];
     
     if (typeof transcript === 'string') {
       transcriptText = transcript;
@@ -47,12 +48,62 @@ module.exports = async (req, res) => {
           totalDuration = lastSegment.start + (lastSegment.duration || 0);
         }
       }
+
+      // Select key segments from the transcript
+      const numSegments = transcript.length;
+      const targetPoints = 6; // We want roughly 6 chapters
+      const interval = Math.floor(numSegments / targetPoints);
       
-      // Format transcript for API use
-      transcriptText = transcript.map(segment => {
-        const timestamp = segment.timestamp || (segment.start !== undefined ? formatTimestamp(segment.start) : '');
-        return `[${timestamp}] ${segment.text}`;
+      // Always include the first segment
+      keySegments.push(transcript[0]);
+      
+      // Sample segments at regular intervals
+      for (let i = interval; i < numSegments - interval; i += interval) {
+        keySegments.push(transcript[i]);
+      }
+      
+      // Always include the last segment if it's not too close to the previous one
+      const lastSegment = transcript[numSegments - 1];
+      if (lastSegment && (!keySegments.length || 
+          Math.abs(getTimestampSeconds(formatTimestamp(lastSegment.start)) - 
+                   getTimestampSeconds(formatTimestamp(keySegments[keySegments.length - 1].start))) > 60)) {
+        keySegments.push(lastSegment);
+      }
+      
+      // Format transcript for API use, including context around key segments
+      const contextWindow = 2; // Number of segments before and after for context
+      const processedSegments = new Set();
+      
+      transcriptText = keySegments.map(keySegment => {
+        const keyIndex = transcript.indexOf(keySegment);
+        const start = Math.max(0, keyIndex - contextWindow);
+        const end = Math.min(numSegments, keyIndex + contextWindow + 1);
+        let segmentText = '';
+        
+        for (let i = start; i < end; i++) {
+          if (!processedSegments.has(i)) {
+            const segment = transcript[i];
+            const timestamp = segment.timestamp || (segment.start !== undefined ? formatTimestamp(segment.start) : '');
+            segmentText += `[${timestamp}] ${segment.text}\n`;
+            processedSegments.add(i);
+          }
+        }
+        
+        return segmentText;
       }).join('\n');
+      
+      // Add some additional context about available timestamps
+      const availableTimestamps = keySegments
+        .map(segment => segment.timestamp || formatTimestamp(segment.start))
+        .filter(Boolean)
+        .join(', ');
+      
+      transcriptText = `VIDEO DURATION: ${formatTimestamp(totalDuration)}
+KEY TIMESTAMPS AVAILABLE: ${availableTimestamps}
+
+TRANSCRIPT SEGMENTS:
+${transcriptText}`;
+      
     } else {
       transcriptText = JSON.stringify(transcript);
     }
@@ -68,27 +119,21 @@ module.exports = async (req, res) => {
           {
             role: "system",
             content: `You are a YouTube chapter generator. Your task is to analyze video transcripts and create meaningful chapter titles with accurate timestamps. Important rules:
-1. Use ONLY timestamps that appear in the transcript
+1. Use ONLY timestamps that appear in the transcript (provided in KEY TIMESTAMPS AVAILABLE)
 2. First chapter must be at 00:00
 3. Generate 5-7 chapters
 4. Ensure timestamps are in chronological order
 5. Last chapter must not exceed video duration: ${formatTimestamp(totalDuration)}
 6. Make titles concise and descriptive (3-6 words)
-7. Use actual transcript content for context`
+7. Use actual transcript content for context
+8. DO NOT make up timestamps - use only those provided in KEY TIMESTAMPS AVAILABLE`
           },
           {
             role: "user",
-            content: `Create chapters for this video transcript. Total duration: ${formatTimestamp(totalDuration)}
-
-${transcriptText}
-
-Return ONLY chapter timestamps and titles, one per line, in this format:
-MM:SS Title
-or
-HH:MM:SS Title`
+            content: transcriptText + "\n\nGenerate chapters using ONLY the timestamps provided above. Format: MM:SS Title or HH:MM:SS Title"
           }
         ],
-        temperature: 0.7
+        temperature: 0.3 // Lower temperature for more precise timestamp usage
       },
       {
         headers: {
