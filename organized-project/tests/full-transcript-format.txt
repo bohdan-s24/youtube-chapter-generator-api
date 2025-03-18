@@ -1,0 +1,41 @@
+VIDEO DURATION: 17:32
+KEY TIMESTAMPS AVAILABLE: 00:00, 02:54, 05:48, 08:42, 11:36, 14:30, 17:30
+
+TRANSCRIPT SEGMENTS:
+[00:00] Sample text at timestamp 00:00
+[00:02] Sample text at timestamp 00:02
+[00:04] Sample text at timestamp 00:04
+
+[02:50] Sample text at timestamp 02:50
+[02:52] Sample text at timestamp 02:52
+[02:54] Sample text at timestamp 02:54
+[02:56] Sample text at timestamp 02:56
+[02:58] Sample text at timestamp 02:58
+
+[05:44] Sample text at timestamp 05:44
+[05:46] Sample text at timestamp 05:46
+[05:48] Sample text at timestamp 05:48
+[05:50] Sample text at timestamp 05:50
+[05:52] Sample text at timestamp 05:52
+
+[08:38] Sample text at timestamp 08:38
+[08:40] Sample text at timestamp 08:40
+[08:42] Sample text at timestamp 08:42
+[08:44] Sample text at timestamp 08:44
+[08:46] Sample text at timestamp 08:46
+
+[11:32] Sample text at timestamp 11:32
+[11:34] Sample text at timestamp 11:34
+[11:36] Sample text at timestamp 11:36
+[11:38] Sample text at timestamp 11:38
+[11:40] Sample text at timestamp 11:40
+
+[14:26] Sample text at timestamp 14:26
+[14:28] Sample text at timestamp 14:28
+[14:30] Sample text at timestamp 14:30
+[14:32] Sample text at timestamp 14:32
+[14:34] Sample text at timestamp 14:34
+
+[17:26] Sample text at timestamp 17:26
+[17:28] Sample text at timestamp 17:28
+[17:30] Sample text at timestamp 17:30
