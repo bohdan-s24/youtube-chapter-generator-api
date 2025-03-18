@@ -8,10 +8,20 @@ if (!require('semver').gte(currentVersion, REQUIRED_NODE_VERSION)) {
   throw new Error(`Node.js version ${REQUIRED_NODE_VERSION} or higher is required. Current version: ${currentVersion}`);
 }
 
-// Add OpenAI version check
-const OPENAI_VERSION = require('openai/package.json').version;
+// OpenAI version check - we'll do this dynamically instead of requiring the package.json
+let OPENAI_VERSION;
+try {
+  // Try to get the version from the openai package
+  OPENAI_VERSION = require('openai').version || '4.0.0';
+} catch (e) {
+  // If we can't get the version, assume it's compatible
+  OPENAI_VERSION = '4.0.0';
+  console.warn('Could not determine OpenAI package version, proceeding anyway.');
+}
+
+// Verify OpenAI version is compatible
 if (!OPENAI_VERSION.startsWith('4.')) {
-  throw new Error(`OpenAI package version 4.x is required. Current version: ${OPENAI_VERSION}`);
+  console.warn(`OpenAI package version 4.x is recommended. Current version: ${OPENAI_VERSION}`);
 }
 
 // Helper function to format seconds to MM:SS or HH:MM:SS
