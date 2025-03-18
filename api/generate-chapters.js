@@ -35,9 +35,19 @@ module.exports = async (req, res) => {
     }
     
     let transcriptText;
+    let totalDuration = 0;
+    
     if (typeof transcript === 'string') {
       transcriptText = transcript;
     } else if (Array.isArray(transcript)) {
+      // Calculate total duration from the last segment
+      if (transcript.length > 0) {
+        const lastSegment = transcript[transcript.length - 1];
+        if (lastSegment.start !== undefined) {
+          totalDuration = lastSegment.start + (lastSegment.duration || 0);
+        }
+      }
+      
       // Format transcript for API use
       transcriptText = transcript.map(segment => {
         const timestamp = segment.timestamp || (segment.start !== undefined ? formatTimestamp(segment.start) : '');
@@ -47,7 +57,7 @@ module.exports = async (req, res) => {
       transcriptText = JSON.stringify(transcript);
     }
     
-    console.log(`Generating chapters for video: ${videoId}, transcript length: ${transcriptText.length}`);
+    console.log(`Generating chapters for video: ${videoId}, transcript length: ${transcriptText.length}, duration: ${formatTimestamp(totalDuration)}`);
     
     // Generate chapters using OpenAI API
     const response = await axios.post(
@@ -57,13 +67,28 @@ module.exports = async (req, res) => {
         messages: [
           {
             role: "system",
-            content: "You are a helpful assistant that generates YouTube chapter titles with timestamps. Generate 5-7 concise and catchy chapter titles. Format each title as 'timestamp - Title'. Make titles engaging and descriptive of the content. Ensure proper chronological order."
+            content: `You are a YouTube chapter generator. Your task is to analyze video transcripts and create meaningful chapter titles with accurate timestamps. Important rules:
+1. Use ONLY timestamps that appear in the transcript
+2. First chapter must be at 00:00
+3. Generate 5-7 chapters
+4. Ensure timestamps are in chronological order
+5. Last chapter must not exceed video duration: ${formatTimestamp(totalDuration)}
+6. Make titles concise and descriptive (3-6 words)
+7. Use actual transcript content for context`
           },
           {
             role: "user",
-            content: transcriptText
+            content: `Create chapters for this video transcript. Total duration: ${formatTimestamp(totalDuration)}
+
+${transcriptText}
+
+Return ONLY chapter timestamps and titles, one per line, in this format:
+MM:SS Title
+or
+HH:MM:SS Title`
           }
-        ]
+        ],
+        temperature: 0.7
       },
       {
         headers: {
@@ -80,14 +105,31 @@ module.exports = async (req, res) => {
       .map(line => {
         const match = line.match(/^([\d:]+)\s*-\s*(.+)$/);
         if (match) {
-          return {
-            timestamp: match[1].trim(),
-            title: match[2].trim()
-          };
+          const timestamp = match[1].trim();
+          // Convert timestamp to seconds for validation
+          const timestampSeconds = getTimestampSeconds(timestamp);
+          if (timestampSeconds <= totalDuration) {
+            return {
+              timestamp: timestamp,
+              title: match[2].trim()
+            };
+          }
+          console.log(`Skipping chapter with timestamp ${timestamp} as it exceeds video duration ${formatTimestamp(totalDuration)}`);
         }
         return null;
       })
       .filter(item => item !== null);
+
+    // Ensure we have at least the introduction chapter
+    if (titles.length === 0) {
+      titles.push({
+        timestamp: "00:00",
+        title: "Introduction"
+      });
+    }
+
+    // Sort chapters by timestamp to ensure chronological order
+    titles.sort((a, b) => getTimestampSeconds(a.timestamp) - getTimestampSeconds(b.timestamp));
 
     // Return consistent format with both titles and chapters for backward compatibility
     return res.status(200).json({ 
@@ -133,4 +175,13 @@ function formatTimestamp(seconds) {
   } else {
     return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
+}
+
+// Helper function to convert timestamp string to seconds
+function getTimestampSeconds(timestamp) {
+  const parts = timestamp.split(':').map(Number);
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  return parts[0] * 60 + parts[1];
 }
