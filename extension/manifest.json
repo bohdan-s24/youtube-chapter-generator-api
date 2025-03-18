@@ -27,7 +27,7 @@
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
-    "https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/*"
+    "https://youtube-chapter-generator-qwtz6ye0h-bohdans-projects-7ca0eede.vercel.app/*"
   ],
   "content_scripts": [
     {

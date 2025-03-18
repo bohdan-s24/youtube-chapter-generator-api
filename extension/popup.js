@@ -122,7 +122,7 @@ document.addEventListener('DOMContentLoaded', function() {
     apiKeyValidation.className = 'validation-message';
     
     try {
-      const response = await fetch('https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/test-openai', {
+      const response = await fetch('https://youtube-chapter-generator-qwtz6ye0h-bohdans-projects-7ca0eede.vercel.app/api/test-openai', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -253,7 +253,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // API endpoint
-  const API_ENDPOINT = 'https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters';
+  const API_ENDPOINT = 'https://youtube-chapter-generator-qwtz6ye0h-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters';
 
   // Check if we're on a YouTube page
   function checkYouTubePage(callback) {
@@ -622,7 +622,7 @@ document.addEventListener('DOMContentLoaded', function() {
           hasApiKey: !!apiKey
         });
         
-        const response = await fetch('https://youtube-chapter-generator-guetxvi2d-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters', {
+        const response = await fetch('https://youtube-chapter-generator-qwtz6ye0h-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

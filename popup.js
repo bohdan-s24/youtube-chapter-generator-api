@@ -140,7 +140,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // API endpoint
-  const API_ENDPOINT = 'https://youtube-chapter-generator-api.vercel.app/api/generate-chapters';
+  const API_ENDPOINT = 'https://youtube-chapter-generator-qwtz6ye0h-bohdans-projects-7ca0eede.vercel.app/api/generate-chapters';
 
   // Check if we're on a YouTube page
   function checkYouTubePage(callback) {
@@ -245,12 +245,17 @@ document.addEventListener('DOMContentLoaded', function() {
   function formatTranscriptForAPI(transcript, videoId) {
     console.log("Formatting transcript for API:", typeof transcript, Array.isArray(transcript) ? transcript.length : 'not an array');
     
-    // If transcript is already a string, convert it to a more useful format
+    // Common parameters for all formats
+    const baseParams = {
+      videoId: videoId,
+      useTimestamps: true, // Explicitly indicate timestamps should be used if available
+      clientVersion: '1.0', // Add client version for API compatibility tracking
+    };
+    
+    // If transcript is already a string, return it directly with metadata
     if (typeof transcript === 'string') {
-      // For plain text transcripts, we can't reliably generate timestamped chapters
-      // Return a simple object with the transcript text
       return {
-        videoId: videoId,
+        ...baseParams,
         transcript: transcript,
         format: "plain_text"
       };
@@ -290,22 +295,75 @@ document.addEventListener('DOMContentLoaded', function() {
       });
       
       // Sort by start time to ensure chronological order
-      formattedSegments.sort((a, b) => (a.start_seconds || 0) - (b.start_seconds || 0));
+      if (formattedSegments.length > 0 && 'start_seconds' in formattedSegments[0]) {
+        formattedSegments.sort((a, b) => (a.start_seconds || 0) - (b.start_seconds || 0));
+      }
       
-      return {
-        videoId: videoId,
-        transcript: formattedSegments,
-        format: "timestamped_segments",
-        useTimestamps: true // Explicit instruction to use timestamps
-      };
+      // If we got no valid segments, try a more lenient approach
+      if (formattedSegments.length === 0 && transcript.length > 0) {
+        console.log("No valid segments found with strict parsing, trying lenient approach");
+        
+        // Try a more permissive approach
+        for (const item of transcript) {
+          if (typeof item === 'object') {
+            const segment = { text: "" };
+            
+            // Get text from any available field
+            for (const key of ['text', 'content', 'caption', 'value']) {
+              if (typeof item[key] === 'string' && item[key].trim()) {
+                segment.text = item[key].trim();
+                break;
+              }
+            }
+            
+            // Get timestamp from any available field
+            for (const key of ['timestamp', 'time', 'startTime', 'start_time']) {
+              if (typeof item[key] === 'string' && item[key].trim()) {
+                segment.timestamp = item[key].trim();
+                break;
+              } else if (typeof item[key] === 'number') {
+                segment.start_seconds = item[key];
+                segment.timestamp = formatTimestamp(item[key]);
+                break;
+              }
+            }
+            
+            if (segment.text) {
+              formattedSegments.push(segment);
+            }
+          }
+        }
+      }
+      
+      if (formattedSegments.length > 0) {
+        return {
+          ...baseParams,
+          transcript: formattedSegments,
+          segmentCount: formattedSegments.length,
+          format: "timestamped_segments"
+        };
+      }
     }
     
-    // Fallback for unexpected transcript format
-    return {
-      videoId: videoId,
-      transcript: transcript,
-      format: "unknown"
-    };
+    // Fallback for unexpected transcript format - try to convert to string if possible
+    try {
+      const stringifiedTranscript = typeof transcript === 'object' ? 
+        JSON.stringify(transcript) : String(transcript);
+        
+      return {
+        ...baseParams,
+        transcript: stringifiedTranscript,
+        format: "unknown_converted_to_string"
+      };
+    } catch (e) {
+      console.error("Error stringifying transcript:", e);
+      return {
+        ...baseParams,
+        transcript: "Error formatting transcript: " + e.message,
+        format: "error",
+        originalFormat: typeof transcript
+      };
+    }
   }
 
   // Helper function to convert timestamp string to seconds
@@ -347,14 +405,30 @@ document.addEventListener('DOMContentLoaded', function() {
     statusContainer.classList.add('hidden');
     loadingElement.classList.add('hidden');
     
-    let chaptersText = '';
+    // Normalize the data structure - handle both 'chapters' and 'titles' formats
+    let normalizedChapters = [];
     
-    // Handle both response formats: chapters[] and titles[]
-    const items = data.chapters || data.titles || [];
+    if (data.chapters && Array.isArray(data.chapters)) {
+      normalizedChapters = data.chapters;
+    } else if (data.titles && Array.isArray(data.titles)) {
+      // Convert titles format to chapters format
+      normalizedChapters = data.titles.map(item => ({
+        time: item.timestamp,
+        title: item.title
+      }));
+    } else {
+      // Use items directly if available (for backward compatibility)
+      const items = data.chapters || data.titles || [];
+      if (Array.isArray(items)) {
+        normalizedChapters = items;
+      }
+    }
+    
+    let chaptersText = '';
     const isLocal = data.source === "local";
     const isOpenAIDirect = data.source === "openai_direct";
     
-    if (items.length === 0) {
+    if (normalizedChapters.length === 0) {
       // Display a message if no chapters were found
       const noChaptersElement = document.createElement('div');
       noChaptersElement.className = 'error-item';
@@ -374,10 +448,10 @@ document.addEventListener('DOMContentLoaded', function() {
         chaptersContainer.appendChild(sourceInfo);
       }
       
-      items.forEach(item => {
-        // Handle both formats: item.time or item.timestamp
-        const timeString = item.time || item.timestamp;
-        const title = item.title;
+      normalizedChapters.forEach(chapter => {
+        // Handle both formats
+        const timeString = chapter.time || chapter.timestamp;
+        const title = chapter.title;
         
         if (timeString && title) {
           const chapterElement = document.createElement('div');
@@ -472,90 +546,264 @@ document.addEventListener('DOMContentLoaded', function() {
       const transcript = transcriptResponse.transcript;
       showDebugInfo(transcript);
       
-      // First try the server API
-      showLoading('Generating chapters with AI...');
-      try {
-        const response = await fetch(API_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
+      // Define generation methods with priorities and conditions
+      const methods = [
+        {
+          name: 'server',
+          priority: 1,
+          condition: () => true, // Always try server first
+          fn: generateWithServerAPI
+        },
+        {
+          name: 'openai',
+          priority: 2,
+          condition: async () => {
+            const result = await chrome.storage.sync.get(['openai_api_key']);
+            return !!result.openai_api_key;
           },
-          body: JSON.stringify({
-            videoId: videoId,
-            transcript: transcript
-          })
-        });
-        
-        const data = await response.json();
-        
-        // Check if we should use local generation
-        if (!response.ok && data.shouldUseLocalGeneration) {
-          console.log('Server API failed, falling back to local generation');
-          showDebugInfo(transcript, data.error || 'API error');
-          return await generateChaptersLocally(transcript);
+          fn: generateWithOpenAI
+        },
+        {
+          name: 'local',
+          priority: 3,
+          condition: () => Array.isArray(transcript) && transcript.length > 0,
+          fn: generateChaptersLocally
         }
-        
-        // If response is not ok and we shouldn't use local generation, throw error
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to generate chapters');
-        }
-        
-        // If we got chapters, display them
-        if (data.chapters && data.chapters.length > 0) {
-          displayChapters(data);
-          return;
-        }
-        
-        // If we got here, something went wrong
-        throw new Error('No chapters generated');
-        
-      } catch (apiError) {
-        console.error('API Error:', apiError);
-        
-        // Try using OpenAI directly if we have an API key
+      ];
+
+      // Sort methods by priority
+      methods.sort((a, b) => a.priority - b.priority);
+
+      let lastError = null;
+      let methodsAttempted = 0;
+
+      // Try each method in sequence
+      for (const method of methods) {
         try {
-          const result = await chrome.storage.sync.get(['openai_api_key']);
-          if (result.openai_api_key) {
-            console.log('Trying direct OpenAI generation...');
-            showLoading('Trying direct OpenAI generation...');
-            
-            const openaiResponse = await fetch(API_ENDPOINT, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                videoId: videoId,
-                transcript: transcript,
-                openai_api_key: result.openai_api_key
-              })
-            });
-            
-            const openaiData = await openaiResponse.json();
-            
-            if (openaiResponse.ok && openaiData.chapters) {
-              displayChapters(openaiData);
-              return;
-            }
-            
-            // If OpenAI direct fails, fall back to local
-            console.log('OpenAI direct failed, falling back to local');
-            showDebugInfo(transcript, 'OpenAI direct generation failed');
-            return await generateChaptersLocally(transcript);
+          // Check if this method should be attempted
+          const shouldTry = await method.condition();
+          if (!shouldTry) {
+            console.log(`Skipping ${method.name} generation - conditions not met`);
+            continue;
           }
-        } catch (openaiError) {
-          console.error('OpenAI Direct Error:', openaiError);
+
+          methodsAttempted++;
+          showLoading(`Generating chapters using ${method.name} method...`);
+          console.log(`Attempting ${method.name} generation method`);
+
+          const result = await method.fn(videoId, transcript);
+          
+          if (result && result.chapters && result.chapters.length > 0) {
+            console.log(`Successfully generated chapters using ${method.name} method`);
+            displayChapters({
+              ...result,
+              source: method.name
+            });
+            return;
+          } else {
+            console.log(`${method.name} method returned no chapters`);
+            throw new Error(`${method.name} method returned no chapters`);
+          }
+        } catch (error) {
+          console.error(`${method.name} generation failed:`, error);
+          lastError = error;
+          
+          // Show intermediate error for user feedback
+          showError(`${method.name} generation failed: ${error.message}. Trying next method...`);
+          
+          // If this was the last method, don't continue
+          if (methodsAttempted === methods.length) {
+            throw new Error(`All generation methods failed. Last error: ${error.message}`);
+          }
+          
+          // Wait a bit before trying next method
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
+        }
+      }
+
+      // If we get here and haven't returned, all methods failed
+      throw new Error(lastError?.message || 'All generation methods failed');
+
+    } catch (error) {
+      console.error('Generate chapters error:', error);
+      showError(error.message || 'Failed to generate chapters');
+      hideLoading();
+    }
+  }
+  
+  // Generate chapters using server API
+  async function generateWithServerAPI(videoId, transcript) {
+    // Format the transcript data properly
+    const formattedData = formatTranscriptForAPI(transcript, videoId);
+    console.log('Sending formatted data to API:', formattedData);
+
+    try {
+      const response = await fetch(API_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(formattedData)
+      });
+
+      // First try to parse the response as JSON
+      let data;
+      const textResponse = await response.text();
+      try {
+        data = JSON.parse(textResponse);
+      } catch (e) {
+        console.error('Failed to parse API response:', textResponse);
+        throw new Error(`API response parsing failed: ${textResponse.substring(0, 100)}`);
+      }
+
+      // Log the complete response for debugging
+      console.log('API Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        data
+      });
+
+      if (!response.ok) {
+        // Throw a detailed error with all available information
+        throw new Error(
+          `API error (${response.status}): ${data.error || data.message || response.statusText}`
+        );
+      }
+
+      // Validate the response has either chapters or titles
+      if ((!data.chapters || !Array.isArray(data.chapters) || data.chapters.length === 0) && 
+          (!data.titles || !Array.isArray(data.titles) || data.titles.length === 0)) {
+        throw new Error('API returned no chapters or titles');
+      }
+
+      // Convert titles to chapters format if needed
+      if (!data.chapters && data.titles && Array.isArray(data.titles)) {
+        data.chapters = data.titles.map(item => ({
+          time: item.timestamp,
+          title: item.title
+        }));
+      }
+
+      // Add source information to the response
+      return {
+        ...data,
+        source: 'server_api'
+      };
+    } catch (error) {
+      // If it's a network error, provide a clearer message
+      if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+        throw new Error('Could not connect to the API server. Please check your internet connection.');
+      }
+      throw error;
+    }
+  }
+  
+  // Generate chapters using OpenAI directly
+  async function generateWithOpenAI(videoId, transcript) {
+    // Get the API key
+    const result = await chrome.storage.sync.get(['openai_api_key']);
+    const apiKey = result.openai_api_key;
+    
+    if (!apiKey) {
+      throw new Error('No OpenAI API key found. Please add your API key in the settings.');
+    }
+
+    // Format the transcript data
+    const formattedData = formatTranscriptForAPI(transcript, videoId);
+    console.log('Sending formatted data to OpenAI:', {
+      ...formattedData,
+      openai_api_key: '***' // Hide the actual key in logs
+    });
+
+    try {
+      const response = await fetch(API_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Generation-Method': 'openai_direct'
+        },
+        body: JSON.stringify({
+          ...formattedData,
+          openai_api_key: apiKey,
+          use_openai_direct: true
+        })
+      });
+
+      // Parse response carefully
+      let data;
+      const textResponse = await response.text();
+      try {
+        data = JSON.parse(textResponse);
+      } catch (e) {
+        console.error('Failed to parse OpenAI response:', textResponse);
+        throw new Error(`OpenAI response parsing failed: ${textResponse.substring(0, 100)}`);
+      }
+
+      // Log the complete response for debugging (excluding sensitive data)
+      console.log('OpenAI Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        data: data ? {
+          ...data,
+          openai_api_key: data.openai_api_key ? '***' : undefined
+        } : null
+      });
+
+      if (!response.ok) {
+        // Handle specific OpenAI error cases
+        if (response.status === 401) {
+          throw new Error('Invalid OpenAI API key. Please check your API key in the settings.');
+        } else if (response.status === 429) {
+          throw new Error('OpenAI API rate limit exceeded. Please try again later.');
+        } else if (response.status === 500) {
+          throw new Error('OpenAI API server error. Please try again later.');
         }
         
-        // If all else fails, use local generation
-        console.log('All API attempts failed, using local generation');
-        showDebugInfo(transcript, apiError.message);
-        return await generateChaptersLocally(transcript);
+        throw new Error(
+          `OpenAI API error (${response.status}): ${data.error || data.message || response.statusText}`
+        );
       }
+
+      // Validate the response has either chapters or titles
+      if ((!data.chapters || !Array.isArray(data.chapters) || data.chapters.length === 0) && 
+          (!data.titles || !Array.isArray(data.titles) || data.titles.length === 0)) {
+        throw new Error('OpenAI returned no chapters or titles');
+      }
+
+      // Convert titles to chapters format if needed
+      if (!data.chapters && data.titles && Array.isArray(data.titles)) {
+        data.chapters = data.titles.map(item => ({
+          time: item.timestamp,
+          title: item.title
+        }));
+      }
+
+      // Validate chapter format
+      const invalidChapters = data.chapters.filter(
+        chapter => !chapter.time || !chapter.title
+      );
+      
+      if (invalidChapters.length > 0) {
+        console.error('Invalid chapters in response:', invalidChapters);
+        throw new Error('OpenAI returned invalid chapter format');
+      }
+
+      // Add source information
+      return {
+        ...data,
+        source: 'openai_direct'
+      };
     } catch (error) {
-      console.error('Error:', error);
-      showError(error.message);
-      hideLoading();
+      // If it's a network error, provide a clearer message
+      if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+        throw new Error('Could not connect to the API server. Please check your internet connection.');
+      }
+      throw error;
     }
   }
   
