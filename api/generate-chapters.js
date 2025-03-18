@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-// Last deployment trigger: Today's date
+// Last deployment trigger: Today's date - with improved transcript debugging
 module.exports = async (req, res) => {
   // Enable CORS with appropriate headers
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -38,10 +38,76 @@ module.exports = async (req, res) => {
     let transcriptText;
     let totalDuration = 0;
     let keySegments = [];
+    let debugInfo = { 
+      transcriptType: typeof transcript,
+      isArray: Array.isArray(transcript),
+      length: Array.isArray(transcript) ? transcript.length : (typeof transcript === 'string' ? transcript.length : 'unknown'),
+      sampleSegment: Array.isArray(transcript) && transcript.length > 0 ? JSON.stringify(transcript[0]) : 'N/A'
+    };
     
     if (typeof transcript === 'string') {
+      // Handle string transcript - try to parse timestamps if it contains [00:00] format
+      const lines = transcript.split('\n');
+      const timestampRegex = /\[(\d{1,2}:\d{2}(?::\d{2})?)\]/;
+      
+      // Extract timestamps if available in the format [00:00]
+      const timestamps = lines
+        .map(line => {
+          const match = line.match(timestampRegex);
+          return match ? match[1] : null;
+        })
+        .filter(Boolean);
+      
+      // Estimate total duration from the last timestamp
+      if (timestamps.length > 0) {
+        const lastTimestamp = timestamps[timestamps.length - 1];
+        totalDuration = getTimestampSeconds(lastTimestamp);
+      }
+      
+      // For string transcripts, we'll send it directly with a note about timestamps
       transcriptText = transcript;
+      
+      // Add info about available timestamps if found
+      if (timestamps.length > 0) {
+        // Sample timestamps evenly throughout the transcript
+        const numTimestamps = timestamps.length;
+        const targetPoints = Math.min(6, numTimestamps);
+        const interval = Math.max(1, Math.floor(numTimestamps / targetPoints));
+        
+        let keyTimestamps = [];
+        // Always include the first timestamp
+        keyTimestamps.push(timestamps[0]);
+        
+        // Sample timestamps at regular intervals
+        for (let i = interval; i < numTimestamps - interval; i += interval) {
+          keyTimestamps.push(timestamps[i]);
+        }
+        
+        // Always include the last timestamp if not too close to previous
+        if (timestamps[numTimestamps - 1] !== keyTimestamps[keyTimestamps.length - 1]) {
+          keyTimestamps.push(timestamps[numTimestamps - 1]);
+        }
+        
+        // Prepend the information
+        transcriptText = `VIDEO DURATION: ${formatTimestamp(totalDuration)}
+KEY TIMESTAMPS AVAILABLE: ${keyTimestamps.join(', ')}
+
+TRANSCRIPT:
+${transcriptText}`;
+      }
+      
+      debugInfo.timestampsFound = timestamps.length;
+      debugInfo.totalDuration = formatTimestamp(totalDuration);
+      
     } else if (Array.isArray(transcript)) {
+      debugInfo.segmentTypes = transcript.slice(0, 3).map(seg => ({
+        hasStart: seg.start !== undefined,
+        hasTimestamp: !!seg.timestamp,
+        startType: typeof seg.start,
+        startValue: seg.start,
+        hasDuration: seg.duration !== undefined
+      }));
+      
       // Calculate total duration from the last segment
       if (transcript.length > 0) {
         const lastSegment = transcript[transcript.length - 1];
@@ -53,7 +119,7 @@ module.exports = async (req, res) => {
       // Select key segments from the transcript
       const numSegments = transcript.length;
       const targetPoints = 6; // We want roughly 6 chapters
-      const interval = Math.floor(numSegments / targetPoints);
+      const interval = Math.max(1, Math.floor(numSegments / targetPoints));
       
       // Always include the first segment
       keySegments.push(transcript[0]);
@@ -66,14 +132,22 @@ module.exports = async (req, res) => {
       // Always include the last segment if it's not too close to the previous one
       const lastSegment = transcript[numSegments - 1];
       if (lastSegment && (!keySegments.length || 
-          Math.abs(getTimestampSeconds(formatTimestamp(lastSegment.start)) - 
-                   getTimestampSeconds(formatTimestamp(keySegments[keySegments.length - 1].start))) > 60)) {
+          Math.abs(getTimestampSeconds(formatTimestamp(lastSegment.start || 0)) - 
+                   getTimestampSeconds(formatTimestamp(keySegments[keySegments.length - 1].start || 0))) > 60)) {
         keySegments.push(lastSegment);
       }
       
       // Format transcript for API use, including context around key segments
       const contextWindow = 2; // Number of segments before and after for context
       const processedSegments = new Set();
+      
+      // Add debugging for key segments
+      debugInfo.keySegmentsSelected = keySegments.length;
+      debugInfo.keySegmentTimestamps = keySegments.map(seg => {
+        if (seg.timestamp) return seg.timestamp;
+        if (seg.start !== undefined) return formatTimestamp(seg.start);
+        return 'unknown';
+      });
       
       transcriptText = keySegments.map(keySegment => {
         const keyIndex = transcript.indexOf(keySegment);
@@ -95,21 +169,24 @@ module.exports = async (req, res) => {
       
       // Add some additional context about available timestamps
       const availableTimestamps = keySegments
-        .map(segment => segment.timestamp || formatTimestamp(segment.start))
-        .filter(Boolean)
-        .join(', ');
+        .map(segment => segment.timestamp || (segment.start !== undefined ? formatTimestamp(segment.start) : ''))
+        .filter(Boolean);
+      
+      debugInfo.availableTimestamps = availableTimestamps;
       
       transcriptText = `VIDEO DURATION: ${formatTimestamp(totalDuration)}
-KEY TIMESTAMPS AVAILABLE: ${availableTimestamps}
+KEY TIMESTAMPS AVAILABLE: ${availableTimestamps.join(', ')}
 
 TRANSCRIPT SEGMENTS:
 ${transcriptText}`;
       
     } else {
       transcriptText = JSON.stringify(transcript);
+      debugInfo.fallbackUsed = true;
     }
     
     console.log(`Generating chapters for video: ${videoId}, transcript length: ${transcriptText.length}, duration: ${formatTimestamp(totalDuration)}`);
+    console.log('Debug info:', JSON.stringify(debugInfo));
     
     // Generate chapters using OpenAI API
     const response = await axios.post(
@@ -127,7 +204,9 @@ ${transcriptText}`;
 5. Last chapter must not exceed video duration: ${formatTimestamp(totalDuration)}
 6. Make titles concise and descriptive (3-6 words)
 7. Use actual transcript content for context
-8. DO NOT make up timestamps - use only those provided in KEY TIMESTAMPS AVAILABLE`
+8. DO NOT make up timestamps - use only those provided in KEY TIMESTAMPS AVAILABLE
+9. DO NOT use the same timestamp more than once
+10. Distribute chapters throughout the video - do not cluster all chapters at the start`
           },
           {
             role: "user",
@@ -183,7 +262,8 @@ ${transcriptText}`;
       chapters: titles.map(item => ({
         time: item.timestamp,
         title: item.title
-      }))
+      })),
+      debug: debugInfo
     });
   } catch (error) {
     console.error('Error:', error.response?.data || error.message);
@@ -212,6 +292,8 @@ ${transcriptText}`;
 
 // Helper function to format seconds to MM:SS or HH:MM:SS
 function formatTimestamp(seconds) {
+  if (seconds === undefined || seconds === null) return "00:00";
+  
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
@@ -225,6 +307,8 @@ function formatTimestamp(seconds) {
 
 // Helper function to convert timestamp string to seconds
 function getTimestampSeconds(timestamp) {
+  if (!timestamp) return 0;
+  
   const parts = timestamp.split(':').map(Number);
   if (parts.length === 3) {
     return parts[0] * 3600 + parts[1] * 60 + parts[2];
