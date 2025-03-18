@@ -1,5 +1,6 @@
 const axios = require('axios');
 
+// Last deployment trigger: Today's date
 module.exports = async (req, res) => {
   // Enable CORS with appropriate headers
   res.setHeader('Access-Control-Allow-Credentials', true);
